@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="PdfReader.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d"
+    Title="Slate PDF">
+
+    <Window.SystemBackdrop>
+        <MicaBackdrop Kind="BaseAlt" />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="Root"
+          RequestedTheme="Dark"
+          AllowDrop="True"
+          DragOver="Root_DragOver"
+          Drop="Root_Drop">
+
+        <Grid.KeyboardAccelerators>
+            <KeyboardAccelerator Modifiers="Control" Key="O" Invoked="OpenAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="P" Invoked="PrintAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="Add" Invoked="ZoomInAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="Subtract" Invoked="ZoomOutAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
+        </Grid.KeyboardAccelerators>
+
+        <Grid.RowDefinitions>
+            <RowDefinition Height="40" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Custom title bar (draggable region) -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" Padding="16,0,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <FontIcon Glyph="&#xEA90;" FontSize="14"
+                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                <TextBlock Text="Slate PDF"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           VerticalAlignment="Center" />
+                <TextBlock x:Name="FileNameText"
+                           Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Toolbar -->
+        <Grid Grid.Row="1" Padding="12,4,12,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <!-- Left: file commands -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="4">
+                <Button x:Name="OpenButton" Click="OpenButton_Click" ToolTipService.ToolTip="Open a PDF (Ctrl+O)">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                        <TextBlock Text="Open" />
+                    </StackPanel>
+                </Button>
+                <Button x:Name="PrintButton" Click="PrintButton_Click" IsEnabled="False" ToolTipService.ToolTip="Print (Ctrl+P)">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <FontIcon Glyph="&#xE749;" FontSize="16" />
+                        <TextBlock Text="Print" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+
+            <!-- Center: page navigation -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
+                        HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Button x:Name="PrevPageButton" Click="PrevPageButton_Click" IsEnabled="False"
+                        Padding="8" ToolTipService.ToolTip="Previous page">
+                    <FontIcon Glyph="&#xE70E;" FontSize="12" />
+                </Button>
+                <TextBox x:Name="PageBox" Width="52" IsEnabled="False"
+                         TextAlignment="Center" VerticalAlignment="Center"
+                         KeyDown="PageBox_KeyDown" />
+                <TextBlock x:Name="PageCountText" Text="/ –"
+                           VerticalAlignment="Center" Margin="4,0,0,0"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button x:Name="NextPageButton" Click="NextPageButton_Click" IsEnabled="False"
+                        Padding="8" ToolTipService.ToolTip="Next page">
+                    <FontIcon Glyph="&#xE70D;" FontSize="12" />
+                </Button>
+            </StackPanel>
+
+            <!-- Right: zoom controls -->
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                <Button x:Name="ZoomOutButton" Click="ZoomOutButton_Click" IsEnabled="False"
+                        Padding="8" ToolTipService.ToolTip="Zoom out (Ctrl+-)">
+                    <FontIcon Glyph="&#xE71F;" FontSize="14" />
+                </Button>
+                <TextBlock x:Name="ZoomText" Text="100%" Width="48"
+                           TextAlignment="Center" VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                <Button x:Name="ZoomInButton" Click="ZoomInButton_Click" IsEnabled="False"
+                        Padding="8" ToolTipService.ToolTip="Zoom in (Ctrl++)">
+                    <FontIcon Glyph="&#xE8A3;" FontSize="14" />
+                </Button>
+                <Button x:Name="FitWidthButton" Click="FitWidthButton_Click" IsEnabled="False"
+                        Padding="8" ToolTipService.ToolTip="Fit width (Ctrl+0)">
+                    <FontIcon Glyph="&#xE9A6;" FontSize="14" />
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- Document area -->
+        <Grid Grid.Row="2">
+            <ScrollViewer x:Name="Scroller"
+                          Background="{ThemeResource LayerFillColorDefaultBrush}"
+                          HorizontalScrollBarVisibility="Auto"
+                          HorizontalScrollMode="Enabled"
+                          VerticalScrollBarVisibility="Auto"
+                          ViewChanged="Scroller_ViewChanged"
+                          SizeChanged="Scroller_SizeChanged">
+                <ItemsRepeater x:Name="PagesRepeater" Margin="24" HorizontalAlignment="Center">
+                    <ItemsRepeater.Layout>
+                        <StackLayout Orientation="Vertical" Spacing="16" />
+                    </ItemsRepeater.Layout>
+                    <ItemsRepeater.ItemTemplate>
+                        <DataTemplate>
+                            <Grid Width="{Binding DisplayWidth}"
+                                  Height="{Binding DisplayHeight}"
+                                  Background="White"
+                                  CornerRadius="2"
+                                  EffectiveViewportChanged="Page_EffectiveViewportChanged">
+                                <Image Source="{Binding Source}" Stretch="Fill" />
+                            </Grid>
+                        </DataTemplate>
+                    </ItemsRepeater.ItemTemplate>
+                </ItemsRepeater>
+            </ScrollViewer>
+
+            <!-- Empty state -->
+            <StackPanel x:Name="EmptyState" Spacing="12"
+                        HorizontalAlignment="Center" VerticalAlignment="Center">
+                <FontIcon Glyph="&#xEA90;" FontSize="56"
+                          Foreground="{ThemeResource TextFillColorTertiaryBrush}"
+                          HorizontalAlignment="Center" />
+                <TextBlock Text="Drop a PDF here"
+                           Style="{StaticResource SubtitleTextBlockStyle}"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                           HorizontalAlignment="Center" />
+                <HyperlinkButton Content="or browse for a file"
+                                 Click="OpenButton_Click"
+                                 HorizontalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
