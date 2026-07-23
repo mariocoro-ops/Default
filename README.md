@@ -3,7 +3,7 @@
 A clean, dark-themed PDF reader and annotator for **Windows 11**, built with
 **WinUI 3** (Windows App SDK) and free/open-source PDF libraries only.
 
-![status](https://img.shields.io/badge/phase-3%20objects-blue)
+![status](https://img.shields.io/badge/version-1.0-blue)
 
 ## Feature roadmap
 
@@ -11,8 +11,8 @@ A clean, dark-themed PDF reader and annotator for **Windows 11**, built with
 |---|---|---|
 | **1 — Viewer** | Open, render, scroll, zoom, fit-width, page navigation, print, drag & drop, `.pdf` file association, dark Mica UI | ✅ Done |
 | **2 — Markup** | Freehand pen drawing, text-aware highlighting, eraser, undo, save annotated copy (PDFsharp) | ✅ Done |
-| **3 — Objects** | Text selection + copy, text boxes, sticky-note comments, pre-saved signature stamp from a scanned image | ✅ In this branch |
-| **4 — Ship** | MSIX installer polish, signing, distribution | Planned |
+| **3 — Objects** | Text selection + copy, text boxes, sticky-note comments, pre-saved signature stamp from a scanned image | ✅ Done |
+| **4 — Ship** | Full icon asset set, v1.0, self-contained Release packages, one-command signed installer build | ✅ Done |
 
 ## Tech stack
 
@@ -46,11 +46,34 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
 
 ### Create a shareable installer
 
-1. Right-click the project → **Package and Publish** → **Create App Packages…**
-2. Choose **Sideloading**, create/select a signing certificate, pick your
-   architectures (x64 at minimum), and build.
-3. Ship the generated folder — recipients install the `.cer` certificate once
-   (or you use a proper code-signing cert), then double-click the `.msix`.
+The easy way — from a PowerShell prompt at the repo root:
+
+```powershell
+.\build-installer.ps1            # x64; add -Platform ARM64 for ARM machines
+```
+
+The script finds MSBuild, creates (or reuses) a self-signed signing
+certificate matching the manifest publisher, and builds a **signed,
+self-contained** MSIX into `.\dist` — the .NET and Windows App SDK runtimes
+ship inside the package, so recipients install nothing else.
+
+Give recipients the `dist` folder contents:
+
+1. **Once per machine:** install `SlatePdf.cer` — right-click → *Install
+   Certificate* → *Local Machine* → store: **Trusted People**. (Or from an
+   admin PowerShell:
+   `Import-Certificate -FilePath SlatePdf.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople`)
+2. Double-click the `.msix` → **Install**. Updates install over the top as
+   long as they're signed with the same certificate.
+
+Keep `slatepdf-signing.pfx` (created next to the script, gitignored) private —
+it's your signing key. If you later buy a real code-signing certificate or
+publish through the Microsoft Store, the certificate-trust step disappears;
+the Store path additionally requires reserving the app name and letting the
+Store re-sign the package.
+
+The Visual Studio wizard (right-click project → **Package and Publish** →
+**Create App Packages…**) remains available if you prefer a UI.
 
 ## Using the app
 
@@ -112,4 +135,6 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
   use a mouse or pen stylus for annotation.
 - `Ctrl` + mouse wheel zoom may also scroll slightly (ScrollViewer quirk);
   keyboard zoom is always clean.
-- The app logo assets are programmer-art placeholders.
+- Column detection for text selection is heuristic (recursive XY-cut); most
+  column layouts work, but unusual table-heavy pages may still group oddly —
+  the freeform highlight fallback always works.

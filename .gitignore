@@ -25,6 +25,7 @@ artifacts/
 # MSIX packaging output
 AppPackages/
 BundleArtifacts/
+dist/
 *.appx
 *.msix
 *.appxbundle
