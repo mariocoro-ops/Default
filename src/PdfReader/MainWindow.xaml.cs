@@ -486,7 +486,7 @@ public sealed partial class MainWindow : Window
         if (page != _currentPage)
         {
             _currentPage = page;
-            if (FocusManager.GetFocusedElement(Root.XamlRoot) != PageBox)
+            if (!ReferenceEquals(FocusManager.GetFocusedElement(Root.XamlRoot), PageBox))
             {
                 PageBox.Text = page.ToString();
             }

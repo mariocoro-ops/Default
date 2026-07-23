@@ -66,11 +66,12 @@ Give recipients the `dist` folder contents:
 2. Double-click the `.msix` → **Install**. Updates install over the top as
    long as they're signed with the same certificate.
 
-Keep `slatepdf-signing.pfx` (created next to the script, gitignored) private —
-it's your signing key. If you later buy a real code-signing certificate or
-publish through the Microsoft Store, the certificate-trust step disappears;
-the Store path additionally requires reserving the app name and letting the
-Store re-sign the package.
+The signing key lives in your user certificate store (`certmgr.msc` →
+Personal → Certificates → `CN=SlatePdf`) — export it from there if you ever
+need to build with the same identity on another machine. If you later buy a
+real code-signing certificate or publish through the Microsoft Store, the
+certificate-trust step disappears; the Store path additionally requires
+reserving the app name and letting the Store re-sign the package.
 
 The Visual Studio wizard (right-click project → **Package and Publish** →
 **Create App Packages…**) remains available if you prefer a UI.
