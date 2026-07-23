@@ -48,9 +48,10 @@ public sealed class ToolState : INotifyPropertyChanged
     public Color HighlightColor { get; set; } = Color.FromArgb(255, 0xFF, 0xEB, 0x3B);
 
     /// <summary>
-    /// Supplies word bounding boxes (page DIPs at 100% zoom) for a page index,
-    /// used for text-aware highlighting. Null or an empty result means the
-    /// highlight falls back to the raw dragged rectangle.
+    /// Supplies word bounding boxes for a page index, in reading order and
+    /// normalized to the page (0..1, top-left origin), used for text-aware
+    /// highlighting. Null or an empty result means the highlight falls back
+    /// to the raw dragged rectangle.
     /// </summary>
     public Func<uint, Task<IReadOnlyList<Rect>>>? WordProvider { get; set; }
 

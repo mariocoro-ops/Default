@@ -14,7 +14,6 @@ namespace PdfReader.Services;
 /// </summary>
 public static class PdfSaveService
 {
-    private const double DipToPoint = 72.0 / 96.0;
     private const byte HighlightAlpha = 115; // ~45% — text stays readable underneath
 
     public static Task SaveAsync(DocumentViewModel doc, string targetPath)
@@ -22,7 +21,7 @@ public static class PdfSaveService
         // Snapshot on the UI thread; ObservableCollection isn't thread-safe.
         var pages = doc.Pages
             .Where(p => p.Annotations.Count > 0)
-            .Select(p => (p.Index, Annotations: p.Annotations.ToList()))
+            .Select(p => (p.Index, p.BaseWidth, p.BaseHeight, Annotations: p.Annotations.ToList()))
             .ToList();
         byte[] bytes = doc.SourceBytes;
 
@@ -31,13 +30,19 @@ public static class PdfSaveService
             using var input = new MemoryStream(bytes, writable: false);
             using var pdf = PdfIO.PdfReader.Open(input, PdfIO.PdfDocumentOpenMode.Modify);
 
-            foreach (var (index, annotations) in pages)
+            foreach (var (index, baseWidth, baseHeight, annotations) in pages)
             {
                 var page = pdf.Pages[(int)index];
+
+                // Scale from overlay coordinates to this page's point size,
+                // derived from the actual page — no unit assumptions.
+                double sx = page.Width.Point / baseWidth;
+                double sy = page.Height.Point / baseHeight;
+
                 using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
                 foreach (var annotation in annotations)
                 {
-                    Draw(gfx, annotation);
+                    Draw(gfx, annotation, sx, sy);
                 }
             }
 
@@ -45,7 +50,7 @@ public static class PdfSaveService
         });
     }
 
-    private static void Draw(XGraphics gfx, AnnotationBase annotation)
+    private static void Draw(XGraphics gfx, AnnotationBase annotation, double sx, double sy)
     {
         switch (annotation)
         {
@@ -55,12 +60,7 @@ public static class PdfSaveService
                     HighlightAlpha, highlight.Color.R, highlight.Color.G, highlight.Color.B));
                 foreach (var r in highlight.Rects)
                 {
-                    gfx.DrawRectangle(
-                        brush,
-                        r.X * DipToPoint,
-                        r.Y * DipToPoint,
-                        r.Width * DipToPoint,
-                        r.Height * DipToPoint);
+                    gfx.DrawRectangle(brush, r.X * sx, r.Y * sy, r.Width * sx, r.Height * sy);
                 }
 
                 break;
@@ -68,7 +68,7 @@ public static class PdfSaveService
 
             case InkAnnotation ink when ink.Points.Count > 0:
             {
-                double width = Math.Max(0.5, ink.Thickness * DipToPoint);
+                double width = Math.Max(0.5, ink.Thickness * sx);
                 var color = XColor.FromArgb(255, ink.Color.R, ink.Color.G, ink.Color.B);
 
                 if (ink.Points.Count == 1)
@@ -76,8 +76,8 @@ public static class PdfSaveService
                     var p = ink.Points[0];
                     gfx.DrawEllipse(
                         new XSolidBrush(color),
-                        p.X * DipToPoint - width / 2,
-                        p.Y * DipToPoint - width / 2,
+                        p.X * sx - width / 2,
+                        p.Y * sy - width / 2,
                         width,
                         width);
                     break;
@@ -90,7 +90,7 @@ public static class PdfSaveService
                 };
                 gfx.DrawLines(
                     pen,
-                    ink.Points.Select(p => new XPoint(p.X * DipToPoint, p.Y * DipToPoint)).ToArray());
+                    ink.Points.Select(p => new XPoint(p.X * sx, p.Y * sy)).ToArray());
                 break;
             }
         }

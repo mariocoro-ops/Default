@@ -4,15 +4,16 @@ namespace PdfReader.Services;
 
 /// <summary>
 /// Extracts word bounding boxes with PdfPig for text-aware highlighting.
-/// The PdfPig document opens lazily on first use (off the UI thread) and
-/// results are cached per page. Any failure — encrypted file, scanned pages,
-/// malformed content — degrades to an empty list, which makes highlights fall
-/// back to freeform rectangles.
+/// Boxes are returned in reading order, normalized to the page (0..1 in both
+/// axes, top-left origin), which sidesteps any unit or crop-box mismatch
+/// between PdfPig and the renderer — the overlay just multiplies by its own
+/// page size. The PdfPig document opens lazily on first use (off the UI
+/// thread) and results are cached per page. Any failure — encrypted file,
+/// scanned pages, malformed content — degrades to an empty list, which makes
+/// highlights fall back to freeform rectangles.
 /// </summary>
 public sealed class TextGeometryService : IDisposable
 {
-    private const double PointToDip = 96.0 / 72.0;
-
     private readonly byte[] _bytes;
     private readonly object _sync = new();
     private readonly Dictionary<uint, IReadOnlyList<Rect>> _cache = new();
@@ -61,20 +62,40 @@ public sealed class TextGeometryService : IDisposable
 
                 try
                 {
-                    // PdfPig is 1-based; coordinates are PDF points with a
-                    // bottom-left origin, so flip Y and convert to DIPs.
+                    // PdfPig is 1-based; coordinates are absolute PDF user
+                    // space with a bottom-left origin. Normalize against the
+                    // crop box (the region the renderer actually shows) and
+                    // flip Y to a top-left origin.
                     var page = _document.GetPage((int)pageIndex + 1);
-                    double pageHeight = page.Height;
 
+                    double cropLeft = 0, cropBottom = 0;
+                    double cropWidth = page.Width, cropHeight = page.Height;
+                    try
+                    {
+                        var crop = page.CropBox.Bounds;
+                        if (crop.Width > 0 && crop.Height > 0)
+                        {
+                            cropLeft = crop.Left;
+                            cropBottom = crop.Bottom;
+                            cropWidth = crop.Width;
+                            cropHeight = crop.Height;
+                        }
+                    }
+                    catch
+                    {
+                        // fall back to the page size
+                    }
+
+                    double cropTop = cropBottom + cropHeight;
                     var rects = new List<Rect>();
                     foreach (var word in page.GetWords())
                     {
                         var box = word.BoundingBox;
                         rects.Add(new Rect(
-                            box.Left * PointToDip,
-                            (pageHeight - box.Top) * PointToDip,
-                            Math.Max(0, box.Right - box.Left) * PointToDip,
-                            Math.Max(0, box.Top - box.Bottom) * PointToDip));
+                            (box.Left - cropLeft) / cropWidth,
+                            (cropTop - box.Top) / cropHeight,
+                            Math.Max(0, box.Right - box.Left) / cropWidth,
+                            Math.Max(0, box.Top - box.Bottom) / cropHeight));
                     }
 
                     IReadOnlyList<Rect> result = rects;

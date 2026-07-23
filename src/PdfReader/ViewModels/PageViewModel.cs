@@ -63,6 +63,9 @@ public sealed class PageViewModel : INotifyPropertyChanged
             }
 
             _zoom = value;
+            // Zoom itself must notify too — the annotation overlay's scale
+            // transform binds to it directly.
+            OnPropertyChanged(nameof(Zoom));
             OnPropertyChanged(nameof(DisplayWidth));
             OnPropertyChanged(nameof(DisplayHeight));
         }

@@ -62,7 +62,7 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
 | Fit width | `Ctrl+0` or the fit-width button |
 | Print | `Ctrl+P` or the **Print** button |
 | Draw | Pen tool (pencil icon), then drag on a page; pick color/size under the palette icon |
-| Highlight | Highlighter tool, then drag across text — the mark snaps to the text lines underneath; on scanned pages it keeps your rectangle |
+| Highlight | Highlighter tool (I-beam cursor), then drag across text like selecting in any reader — words are selected in reading order with a live preview; on scanned pages it keeps your rectangle |
 | Erase | Eraser tool, then click (or drag over) a mark |
 | Undo | `Ctrl+Z` or the undo button |
 | Back to scrolling | `Esc` or the select tool |
@@ -94,8 +94,8 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
 - Password-protected PDFs show an error instead of a password prompt.
 - Saved marks are flattened into the page, so they can't be selected or
   deleted afterwards in other PDF editors (undo works while the app is open).
-- Pages with a `/Rotate` entry or unusual crop boxes may place highlights
-  slightly off; standard documents are unaffected.
+- Pages with a `/Rotate` entry may place marks slightly off; standard
+  documents are unaffected.
 - On touch screens, one-finger drag pans the document rather than drawing —
   use a mouse or pen stylus for annotation.
 - `Ctrl` + mouse wheel zoom may also scroll slightly (ScrollViewer quirk);

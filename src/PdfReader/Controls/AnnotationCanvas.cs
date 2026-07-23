@@ -1,6 +1,7 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using Microsoft.UI;
+using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
@@ -20,10 +21,16 @@ namespace PdfReader.Controls;
 /// annotations and handles the Draw / Highlight / Erase tools. The canvas is
 /// laid out at the page's 100%-zoom size and scaled with a RenderTransform,
 /// so all pointer coordinates arrive already in zoom-independent page DIPs.
+///
+/// Highlighting works like text selection in a normal PDF reader: the drag
+/// selects words in reading order between the anchor and the pointer (full
+/// lines in the middle, partial first/last lines), with a live preview. On
+/// pages without extractable text it falls back to a freeform rectangle.
 /// </summary>
 public sealed class AnnotationCanvas : Canvas
 {
     private const byte HighlightAlpha = 0x73;
+    private const double AnchorSnapDistance = 25.0; // DIPs — press must be near text to enter selection mode
 
     public static readonly DependencyProperty PageProperty = DependencyProperty.Register(
         nameof(Page), typeof(PageViewModel), typeof(AnnotationCanvas),
@@ -39,9 +46,15 @@ public sealed class AnnotationCanvas : Canvas
     private Polyline? _activeStroke;
     private List<Point>? _activePoints;
     private Point _lastPoint;
-    private Rectangle? _selectionRect;
-    private Point _selectionStart;
     private bool _pointerActive;
+
+    // Live highlight-selection state
+    private Point _selectionStart;
+    private readonly List<Rectangle> _previewShapes = new();
+
+    // Word boxes for this page (base DIPs, reading order), fetched lazily.
+    private List<Rect>? _pageWords;
+    private bool _wordFetchStarted;
 
     public AnnotationCanvas()
     {
@@ -91,6 +104,10 @@ public sealed class AnnotationCanvas : Canvas
             newPage.Annotations.CollectionChanged += canvas.OnAnnotationsChanged;
         }
 
+        // Word cache belongs to the old page (containers get recycled).
+        canvas._pageWords = null;
+        canvas._wordFetchStarted = false;
+
         canvas.CancelActiveInteraction();
         canvas.Rebuild();
         canvas.UpdateInteractivity();
@@ -111,16 +128,147 @@ public sealed class AnnotationCanvas : Canvas
         }
     }
 
-    private void UpdateInteractivity() =>
-        IsHitTestVisible = Page is not null && ToolState.Current.Tool != AnnotationTool.None;
+    private void UpdateInteractivity()
+    {
+        var tool = ToolState.Current.Tool;
+        IsHitTestVisible = Page is not null && tool != AnnotationTool.None;
+
+        ProtectedCursor = tool switch
+        {
+            AnnotationTool.Highlight => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
+            AnnotationTool.Draw => InputSystemCursor.Create(InputSystemCursorShape.Cross),
+            AnnotationTool.Erase => InputSystemCursor.Create(InputSystemCursorShape.Hand),
+            _ => null,
+        };
+
+        if (tool == AnnotationTool.Highlight)
+        {
+            EnsureWordsLoaded();
+        }
+    }
 
     private void OnAnnotationsChanged(object? sender, NotifyCollectionChangedEventArgs e) => Rebuild();
+
+    // ------------------------------------------------------------ word geometry
+
+    private void EnsureWordsLoaded()
+    {
+        if (_wordFetchStarted || Page is null)
+        {
+            return;
+        }
+
+        _wordFetchStarted = true;
+        var provider = ToolState.Current.WordProvider;
+        if (provider is null)
+        {
+            _pageWords = new List<Rect>();
+            return;
+        }
+
+        _ = FetchWordsAsync(provider, Page);
+    }
+
+    private async Task FetchWordsAsync(
+        Func<uint, Task<IReadOnlyList<Rect>>> provider, PageViewModel page)
+    {
+        List<Rect> words;
+        try
+        {
+            // Provider results are normalized (0..1); scale to this page's
+            // base size so everything downstream is in page DIPs.
+            var normalized = await provider(page.Index);
+            words = normalized
+                .Select(n => new Rect(
+                    n.X * page.BaseWidth,
+                    n.Y * page.BaseHeight,
+                    n.Width * page.BaseWidth,
+                    n.Height * page.BaseHeight))
+                .ToList();
+        }
+        catch
+        {
+            words = new List<Rect>();
+        }
+
+        if (Page == page)
+        {
+            _pageWords = words;
+        }
+    }
+
+    /// <summary>
+    /// Index of the word at (or near) a point, or null if none within
+    /// <paramref name="maxDistance"/>.
+    /// </summary>
+    private int? WordIndexAt(Point p, double maxDistance)
+    {
+        if (_pageWords is null || _pageWords.Count == 0)
+        {
+            return null;
+        }
+
+        int best = -1;
+        double bestDistance = double.MaxValue;
+        for (int i = 0; i < _pageWords.Count; i++)
+        {
+            var r = _pageWords[i];
+            double dx = Math.Max(Math.Max(r.Left - p.X, 0), p.X - r.Right);
+            double dy = Math.Max(Math.Max(r.Top - p.Y, 0), p.Y - r.Bottom);
+            if (dx <= 0 && dy <= 0)
+            {
+                return i; // inside the box
+            }
+
+            double distance = Math.Sqrt(dx * dx + dy * dy);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = i;
+            }
+        }
+
+        return bestDistance <= maxDistance ? best : null;
+    }
+
+    /// <summary>
+    /// The highlight rectangles for the current drag: words between anchor and
+    /// pointer in reading order when the drag started on text, else the raw
+    /// dragged rectangle.
+    /// </summary>
+    private List<Rect> ComputeHighlightRects(Point anchor, Point current, out bool snappedToText)
+    {
+        if (_pageWords is { Count: > 0 })
+        {
+            int? anchorIndex = WordIndexAt(anchor, AnchorSnapDistance);
+            if (anchorIndex.HasValue)
+            {
+                // Once anchored to text, the far end snaps to the nearest word
+                // no matter how far the pointer strays.
+                int? currentIndex = WordIndexAt(current, double.MaxValue);
+                if (currentIndex.HasValue)
+                {
+                    snappedToText = true;
+                    int lo = Math.Min(anchorIndex.Value, currentIndex.Value);
+                    int hi = Math.Max(anchorIndex.Value, currentIndex.Value);
+                    return AnnotationGeometry.MergeIntoLines(_pageWords.GetRange(lo, hi - lo + 1));
+                }
+            }
+        }
+
+        snappedToText = false;
+        var rect = Normalize(anchor, current);
+        return rect.Width >= 3 || rect.Height >= 3
+            ? new List<Rect> { rect }
+            : new List<Rect>();
+    }
 
     // ------------------------------------------------------------ rendering
 
     private void Rebuild()
     {
         Children.Clear();
+        _previewShapes.Clear();
         if (Page is null)
         {
             return;
@@ -192,6 +340,43 @@ public sealed class AnnotationCanvas : Canvas
         }
     }
 
+    private void UpdateHighlightPreview(Point current)
+    {
+        ClearPreview();
+
+        var rects = ComputeHighlightRects(_selectionStart, current, out bool snappedToText);
+        var color = ToolState.Current.HighlightColor;
+        foreach (var r in rects)
+        {
+            var shape = new Rectangle
+            {
+                Width = r.Width,
+                Height = r.Height,
+                Fill = new SolidColorBrush(WithAlpha(color, 0x55)),
+            };
+            if (!snappedToText)
+            {
+                shape.Stroke = new SolidColorBrush(WithAlpha(color, 0xA0));
+                shape.StrokeThickness = 1;
+            }
+
+            SetLeft(shape, r.X);
+            SetTop(shape, r.Y);
+            _previewShapes.Add(shape);
+            Children.Add(shape);
+        }
+    }
+
+    private void ClearPreview()
+    {
+        foreach (var shape in _previewShapes)
+        {
+            Children.Remove(shape);
+        }
+
+        _previewShapes.Clear();
+    }
+
     private static Color WithAlpha(Color c, byte alpha) => Color.FromArgb(alpha, c.R, c.G, c.B);
 
     // ------------------------------------------------------------ pointer interaction
@@ -232,18 +417,9 @@ public sealed class AnnotationCanvas : Canvas
                 break;
 
             case AnnotationTool.Highlight:
+                EnsureWordsLoaded();
                 _selectionStart = pos;
-                _selectionRect = new Rectangle
-                {
-                    Fill = new SolidColorBrush(WithAlpha(ToolState.Current.HighlightColor, 0x40)),
-                    Stroke = new SolidColorBrush(WithAlpha(ToolState.Current.HighlightColor, 0xA0)),
-                    StrokeThickness = 1,
-                    Width = 0,
-                    Height = 0,
-                };
-                SetLeft(_selectionRect, pos.X);
-                SetTop(_selectionRect, pos.Y);
-                Children.Add(_selectionRect);
+                UpdateHighlightPreview(pos);
                 break;
 
             case AnnotationTool.Erase:
@@ -283,16 +459,9 @@ public sealed class AnnotationCanvas : Canvas
                 break;
             }
 
-            case AnnotationTool.Highlight when _selectionRect is not null:
-            {
-                var pos = Clamp(e.GetCurrentPoint(this).Position);
-                var rect = Normalize(_selectionStart, pos);
-                SetLeft(_selectionRect, rect.X);
-                SetTop(_selectionRect, rect.Y);
-                _selectionRect.Width = rect.Width;
-                _selectionRect.Height = rect.Height;
+            case AnnotationTool.Highlight:
+                UpdateHighlightPreview(Clamp(e.GetCurrentPoint(this).Position));
                 break;
-            }
 
             case AnnotationTool.Erase:
                 EraseAt(Clamp(e.GetCurrentPoint(this).Position));
@@ -331,13 +500,16 @@ public sealed class AnnotationCanvas : Canvas
                 break;
             }
 
-            case AnnotationTool.Highlight when page is not null && _selectionRect is not null:
+            case AnnotationTool.Highlight when page is not null:
             {
-                Children.Remove(_selectionRect);
-                var rect = Normalize(_selectionStart, pos);
-                if (rect.Width >= 3 || rect.Height >= 3)
+                ClearPreview();
+                var rects = ComputeHighlightRects(_selectionStart, pos, out _);
+                if (rects.Count > 0)
                 {
-                    _ = CommitHighlightAsync(page, rect);
+                    var highlight = new HighlightAnnotation { Color = ToolState.Current.HighlightColor };
+                    highlight.Rects.AddRange(rects);
+                    page.Annotations.Add(highlight); // triggers Rebuild
+                    ToolState.Current.NotifyAnnotationAdded(page, highlight);
                 }
 
                 break;
@@ -352,42 +524,6 @@ public sealed class AnnotationCanvas : Canvas
 
     private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e) =>
         CancelActiveInteraction();
-
-    private async Task CommitHighlightAsync(PageViewModel page, Rect selection)
-    {
-        var color = ToolState.Current.HighlightColor;
-
-        IReadOnlyList<Rect> words = Array.Empty<Rect>();
-        var provider = ToolState.Current.WordProvider;
-        if (provider is not null)
-        {
-            try
-            {
-                words = await provider(page.Index);
-            }
-            catch
-            {
-                // fall through to the freeform rectangle
-            }
-        }
-
-        var hits = words.Where(w => AnnotationGeometry.Intersects(w, selection)).ToList();
-
-        var highlight = new HighlightAnnotation { Color = color };
-        if (hits.Count > 0)
-        {
-            highlight.Rects.AddRange(AnnotationGeometry.MergeIntoLines(hits));
-        }
-        else
-        {
-            // No text under the selection (scanned page, image, etc.) —
-            // keep the raw rectangle so the tool still does something useful.
-            highlight.Rects.Add(selection);
-        }
-
-        page.Annotations.Add(highlight);
-        ToolState.Current.NotifyAnnotationAdded(page, highlight);
-    }
 
     private void EraseAt(Point pos)
     {
@@ -414,7 +550,6 @@ public sealed class AnnotationCanvas : Canvas
         _pointerActive = false;
         _activeStroke = null;
         _activePoints = null;
-        _selectionRect = null;
     }
 
     private void CancelActiveInteraction()
@@ -424,15 +559,10 @@ public sealed class AnnotationCanvas : Canvas
             Children.Remove(_activeStroke);
         }
 
-        if (_selectionRect is not null)
-        {
-            Children.Remove(_selectionRect);
-        }
-
+        ClearPreview();
         _pointerActive = false;
         _activeStroke = null;
         _activePoints = null;
-        _selectionRect = null;
     }
 
     private Point Clamp(Point p) => new(
