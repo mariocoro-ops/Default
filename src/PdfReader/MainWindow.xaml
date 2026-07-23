@@ -29,6 +29,7 @@
             <KeyboardAccelerator Modifiers="Control" Key="Subtract" Invoked="ZoomOutAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
             <KeyboardAccelerator Key="Escape" Invoked="EscapeAccelerator_Invoked" />
+            <KeyboardAccelerator Key="H" Invoked="HandAccelerator_Invoked" />
         </Grid.KeyboardAccelerators>
 
         <Grid.RowDefinitions>
@@ -81,6 +82,11 @@
                               IsEnabled="False" IsChecked="True"
                               ToolTipService.ToolTip="Select / scroll (Esc)">
                     <FontIcon Glyph="&#xE8B0;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="HandToolButton" Click="HandToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Pan — grab and drag the page (H)">
+                    <FontIcon Glyph="&#xE7C9;" FontSize="16" />
                 </ToggleButton>
                 <ToggleButton x:Name="TextSelectToolButton" Click="TextSelectToolButton_Click" Padding="9"
                               IsEnabled="False"

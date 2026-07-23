@@ -49,6 +49,10 @@ public sealed class AnnotationCanvas : Canvas
     private Point _lastPoint;
     private bool _pointerActive;
 
+    // Hand-tool panning state
+    private bool _panning;
+    private Point _panStart; // window coordinates at grab
+
     // Live highlight-selection state
     private Point _selectionStart;
     private readonly List<Rectangle> _previewShapes = new();
@@ -200,6 +204,7 @@ public sealed class AnnotationCanvas : Canvas
 
         ProtectedCursor = tool switch
         {
+            AnnotationTool.Hand => InputSystemCursor.Create(InputSystemCursorShape.Hand),
             AnnotationTool.TextSelect => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
             AnnotationTool.Highlight => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
             AnnotationTool.Text => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
@@ -639,6 +644,14 @@ public sealed class AnnotationCanvas : Canvas
 
         switch (tool)
         {
+            case AnnotationTool.Hand:
+                // Track in window coordinates so the deltas we feed back into
+                // the ScrollViewer aren't themselves moved by the scrolling.
+                _panning = true;
+                _panStart = e.GetCurrentPoint(null).Position;
+                ToolState.Current.NotifyPanStarted();
+                break;
+
             case AnnotationTool.Draw:
                 _activePoints = new List<Point> { pos };
                 _lastPoint = pos;
@@ -761,6 +774,13 @@ public sealed class AnnotationCanvas : Canvas
 
         switch (ToolState.Current.Tool)
         {
+            case AnnotationTool.Hand when _panning:
+            {
+                var p = e.GetCurrentPoint(null).Position;
+                ToolState.Current.NotifyPanUpdated(p.X - _panStart.X, p.Y - _panStart.Y);
+                break;
+            }
+
             case AnnotationTool.Draw when _activeStroke is not null && _activePoints is not null:
             {
                 // Intermediate points arrive newest-first; walk them oldest-first.
@@ -1239,6 +1259,7 @@ public sealed class AnnotationCanvas : Canvas
         // synchronously raises PointerCaptureLost, which must see the
         // interaction as already finished.
         _pointerActive = false;
+        _panning = false;
         _activeStroke = null;
         _activePoints = null;
         _pressedObject = null;
@@ -1263,6 +1284,7 @@ public sealed class AnnotationCanvas : Canvas
         }
 
         _pointerActive = false;
+        _panning = false;
         _activeStroke = null;
         _activePoints = null;
         _pressedObject = null;

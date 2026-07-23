@@ -37,6 +37,8 @@ public sealed partial class MainWindow : Window
     private int _currentPage = 1;
     private bool _fitWidthMode = true;
     private bool _isModified;
+    private double _panStartHorizontal;
+    private double _panStartVertical;
 
     public MainWindow()
     {
@@ -58,6 +60,16 @@ public sealed partial class MainWindow : Window
         // Undo bookkeeping for edits made on the page overlays.
         ToolState.Current.AnnotationAdded += (page, annotation) => OnAnnotationEdit(page, annotation, wasAdd: true);
         ToolState.Current.AnnotationRemoved += (page, annotation) => OnAnnotationEdit(page, annotation, wasAdd: false);
+
+        // Hand-tool panning: the overlay reports window-space deltas; translate
+        // them into scroll offsets from where the grab started.
+        ToolState.Current.PanStarted += () =>
+        {
+            _panStartHorizontal = Scroller.HorizontalOffset;
+            _panStartVertical = Scroller.VerticalOffset;
+        };
+        ToolState.Current.PanUpdated += (dx, dy) =>
+            Scroller.ChangeView(_panStartHorizontal - dx, _panStartVertical - dy, null, disableAnimation: true);
 
         // Ctrl+mouse-wheel zoom. handledEventsToo because the ScrollViewer
         // marks wheel events handled.
@@ -113,6 +125,7 @@ public sealed partial class MainWindow : Window
         ZoomOutButton.IsEnabled = true;
         FitWidthButton.IsEnabled = true;
         SelectToolButton.IsEnabled = true;
+        HandToolButton.IsEnabled = true;
         TextSelectToolButton.IsEnabled = true;
         DrawToolButton.IsEnabled = true;
         HighlightToolButton.IsEnabled = true;
@@ -215,6 +228,7 @@ public sealed partial class MainWindow : Window
         }
 
         SelectToolButton.IsChecked = tool == AnnotationTool.None;
+        HandToolButton.IsChecked = tool == AnnotationTool.Hand;
         TextSelectToolButton.IsChecked = tool == AnnotationTool.TextSelect;
         DrawToolButton.IsChecked = tool == AnnotationTool.Draw;
         HighlightToolButton.IsChecked = tool == AnnotationTool.Highlight;
@@ -226,6 +240,9 @@ public sealed partial class MainWindow : Window
 
     private void SelectToolButton_Click(object sender, RoutedEventArgs e) =>
         SetTool(AnnotationTool.None);
+
+    private void HandToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(HandToolButton.IsChecked == true ? AnnotationTool.Hand : AnnotationTool.None);
 
     private void TextSelectToolButton_Click(object sender, RoutedEventArgs e) =>
         SetTool(TextSelectToolButton.IsChecked == true ? AnnotationTool.TextSelect : AnnotationTool.None);
@@ -730,6 +747,18 @@ public sealed partial class MainWindow : Window
             args.Handled = true;
             SetTool(AnnotationTool.None);
         }
+    }
+
+    private void HandAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        // Don't hijack "h" while typing in a text field.
+        if (_doc is null || FocusManager.GetFocusedElement(Root.XamlRoot) is TextBox)
+        {
+            return;
+        }
+
+        args.Handled = true;
+        SetTool(ToolState.Current.Tool == AnnotationTool.Hand ? AnnotationTool.None : AnnotationTool.Hand);
     }
 
     // ---------------------------------------------------------------- helpers

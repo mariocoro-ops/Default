@@ -10,6 +10,9 @@ public enum AnnotationTool
     /// <summary>No annotation tool active — normal scrolling.</summary>
     None,
 
+    /// <summary>Grab-and-drag panning of the document.</summary>
+    Hand,
+
     /// <summary>Select text with the pointer; Ctrl+C copies it.</summary>
     TextSelect,
     Draw,
@@ -101,6 +104,20 @@ public sealed class ToolState : INotifyPropertyChanged
             SelectionOwnerChanged?.Invoke(null);
         }
     }
+
+    // ------------------------------------------------------------ hand-tool panning
+
+    // The overlay reports pointer deltas (in window coordinates, so they are
+    // unaffected by the scrolling they drive); the window translates them into
+    // scroll offsets. Kept here so the per-page canvases can reach the single
+    // ScrollViewer without a direct reference.
+    public event Action? PanStarted;
+
+    public event Action<double, double>? PanUpdated;
+
+    public void NotifyPanStarted() => PanStarted?.Invoke();
+
+    public void NotifyPanUpdated(double dx, double dy) => PanUpdated?.Invoke(dx, dy);
 
     // ------------------------------------------------------------ edit notifications
 

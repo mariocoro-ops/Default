@@ -82,6 +82,7 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 |---|---|
 | Open a PDF | `Ctrl+O`, the **Open** button, or drag & drop a file onto the window |
 | Navigate | Scroll, `Page Up`/`Page Down`, the arrows / page box in the toolbar |
+| Pan | Hand tool (`H`), then grab and drag the page to move it around |
 | Zoom | `Ctrl` + `+`/`-`, `Ctrl` + mouse wheel, or the toolbar buttons |
 | Fit width | `Ctrl+0` or the fit-width button |
 | Print | `Ctrl+P` or the **Print** button |
