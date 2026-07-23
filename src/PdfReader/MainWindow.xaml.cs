@@ -33,6 +33,7 @@ public sealed partial class MainWindow : Window
     private readonly Stack<(PageViewModel Page, AnnotationBase Annotation, bool WasAdd)> _undoStack = new();
     private DocumentViewModel? _doc;
     private TextGeometryService? _textService;
+    private LinkService? _linkService;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _infoBarTimer;
     private int _currentPage = 1;
     private bool _fitWidthMode = true;
@@ -71,6 +72,10 @@ public sealed partial class MainWindow : Window
         ToolState.Current.PanUpdated += (dx, dy) =>
             Scroller.ChangeView(_panStartHorizontal - dx, _panStartVertical - dy, null, disableAnimation: true);
 
+        // Link navigation raised from the per-page link layers.
+        ToolState.Current.NavigateToPageRequested += NavigateToPage;
+        ToolState.Current.OpenUriRequested += uri => _ = OpenExternalUriAsync(uri);
+
         // Ctrl+mouse-wheel zoom. handledEventsToo because the ScrollViewer
         // marks wheel events handled.
         Scroller.AddHandler(
@@ -102,6 +107,10 @@ public sealed partial class MainWindow : Window
         _textService?.Dispose();
         _textService = new TextGeometryService(doc.SourceBytes);
         ToolState.Current.WordProvider = index => _textService.GetWordsAsync(index);
+
+        _linkService?.Dispose();
+        _linkService = new LinkService(doc.SourceBytes);
+        ToolState.Current.LinkProvider = index => _linkService.GetLinksAsync(index);
 
         _undoStack.Clear();
         _isModified = false;
@@ -527,6 +536,58 @@ public sealed partial class MainWindow : Window
         Scroller.ChangeView(null, offset, null, disableAnimation: true);
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
+    }
+
+    // ---------------------------------------------------------------- link navigation
+
+    /// <summary>Scrolls to a zero-based page and a 0..1 vertical position on it (internal links).</summary>
+    private void NavigateToPage(int pageIndex, double topFraction)
+    {
+        if (_doc is null || _doc.Pages.Count == 0)
+        {
+            return;
+        }
+
+        pageIndex = Math.Clamp(pageIndex, 0, _doc.Pages.Count - 1);
+        double offset = ContentMargin;
+        for (int i = 0; i < pageIndex; i++)
+        {
+            offset += _doc.Pages[i].DisplayHeight + PageSpacing;
+        }
+
+        offset += Math.Clamp(topFraction, 0, 1) * _doc.Pages[pageIndex].DisplayHeight;
+        offset = Math.Max(0, offset - 8); // a little headroom above the target
+
+        // Animated so the jump reads as navigation rather than a teleport.
+        Scroller.ChangeView(null, offset, null, disableAnimation: false);
+        _currentPage = pageIndex + 1;
+        PageBox.Text = _currentPage.ToString();
+    }
+
+    /// <summary>Opens an external link after confirming, restricted to safe schemes.</summary>
+    private async Task OpenExternalUriAsync(string uri)
+    {
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed) ||
+            parsed.Scheme is not ("http" or "https" or "mailto" or "tel"))
+        {
+            await ShowErrorAsync("Can't open link", "This link points to an unsupported or unsafe location.");
+            return;
+        }
+
+        var dialog = new ContentDialog
+        {
+            Title = "Open link?",
+            Content = parsed.ToString(),
+            PrimaryButtonText = "Open",
+            CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = Root.XamlRoot,
+        };
+
+        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        {
+            await Launcher.LaunchUriAsync(parsed);
+        }
     }
 
     private void PrevPageButton_Click(object sender, RoutedEventArgs e) => JumpToPage(_currentPage - 1);

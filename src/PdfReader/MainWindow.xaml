@@ -240,6 +240,13 @@
                                   CornerRadius="2"
                                   EffectiveViewportChanged="Page_EffectiveViewportChanged">
                                 <Image Source="{Binding Source}" Stretch="Fill" />
+                                <controls:LinkLayer
+                                    Page="{Binding}"
+                                    Zoom="{Binding Zoom}"
+                                    Width="{Binding BaseWidth}"
+                                    Height="{Binding BaseHeight}"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Top" />
                                 <controls:AnnotationCanvas
                                     Page="{Binding}"
                                     Zoom="{Binding Zoom}"

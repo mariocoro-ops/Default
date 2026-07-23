@@ -72,6 +72,12 @@ public sealed class ToolState : INotifyPropertyChanged
     /// </summary>
     public Func<uint, Task<IReadOnlyList<WordBox>>>? WordProvider { get; set; }
 
+    /// <summary>
+    /// Supplies clickable link regions for a page index, normalized to the
+    /// page. Null or empty means the page has no navigable links.
+    /// </summary>
+    public Func<uint, Task<IReadOnlyList<PdfLink>>>? LinkProvider { get; set; }
+
     // ------------------------------------------------------------ text selection
 
     /// <summary>The canvas that currently owns the text selection, if any.</summary>
@@ -118,6 +124,19 @@ public sealed class ToolState : INotifyPropertyChanged
     public void NotifyPanStarted() => PanStarted?.Invoke();
 
     public void NotifyPanUpdated(double dx, double dy) => PanUpdated?.Invoke(dx, dy);
+
+    // ------------------------------------------------------------ link navigation
+
+    /// <summary>Raised when an internal link is clicked: (target page index, 0..1 vertical fraction).</summary>
+    public event Action<int, double>? NavigateToPageRequested;
+
+    /// <summary>Raised when an external link is clicked: the absolute URI.</summary>
+    public event Action<string>? OpenUriRequested;
+
+    public void RequestNavigateToPage(int pageIndex, double topFraction) =>
+        NavigateToPageRequested?.Invoke(pageIndex, topFraction);
+
+    public void RequestOpenUri(string uri) => OpenUriRequested?.Invoke(uri);
 
     // ------------------------------------------------------------ edit notifications
 
