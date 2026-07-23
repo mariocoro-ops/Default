@@ -986,11 +986,25 @@ public sealed class AnnotationCanvas : Canvas
         }
     }
 
-    private void OnPointerCanceled(object sender, PointerRoutedEventArgs e) =>
-        CancelActiveInteraction();
+    private void OnPointerCanceled(object sender, PointerRoutedEventArgs e)
+    {
+        // Only a loss during an active interaction is a real cancellation.
+        if (_pointerActive)
+        {
+            CancelActiveInteraction();
+        }
+    }
 
-    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e) =>
-        CancelActiveInteraction();
+    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e)
+    {
+        // ReleasePointerCapture in FinishInteraction raises this event too;
+        // by then _pointerActive is already false. Cancelling unconditionally
+        // here is what killed freshly opened text editors.
+        if (_pointerActive)
+        {
+            CancelActiveInteraction();
+        }
+    }
 
     // ------------------------------------------------------------ object helpers
 
@@ -1075,6 +1089,9 @@ public sealed class AnnotationCanvas : Canvas
             TextWrapping = TextWrapping.NoWrap,
             MinWidth = 140,
             Foreground = new SolidColorBrush(annotation.Color),
+            // The app is dark-themed but the editor floats on the white page.
+            RequestedTheme = ElementTheme.Light,
+            Background = new SolidColorBrush(Colors.White),
         };
         // Offset roughly compensates the TextBox's inner padding so the
         // editor's text sits where the committed TextBlock will render.
@@ -1218,13 +1235,16 @@ public sealed class AnnotationCanvas : Canvas
 
     private void FinishInteraction(PointerRoutedEventArgs e)
     {
-        ReleasePointerCapture(e.Pointer);
+        // Clear the interaction state BEFORE releasing capture — the release
+        // synchronously raises PointerCaptureLost, which must see the
+        // interaction as already finished.
         _pointerActive = false;
         _activeStroke = null;
         _activePoints = null;
         _pressedObject = null;
         _dragOriginals = null;
         _resizingSignature = null;
+        ReleasePointerCapture(e.Pointer);
     }
 
     private void CancelActiveInteraction()
