@@ -56,6 +56,13 @@ public sealed class AnnotationCanvas : Canvas
     // Text-selection state (TextSelect tool)
     private int _selectionAnchor = -1;
     private readonly List<Rectangle> _selectionShapes = new();
+    private List<Rect>? _selectionRects; // committed selection, for select-then-highlight
+
+    // Object whose editor should open once the pointer is released. Opening
+    // (and focusing) an editor during the press is what made text boxes
+    // "flash": the focus didn't survive the in-flight pointer interaction,
+    // LostFocus fired on an empty box, and the box deleted itself.
+    private AnnotationBase? _pendingEditorObject;
 
     // Object interaction state (Text / Comment / Signature tools)
     private AnnotationBase? _pressedObject;
@@ -147,11 +154,35 @@ public sealed class AnnotationCanvas : Canvas
     {
         if (e.PropertyName == nameof(ToolState.Tool))
         {
+            // Switching to the highlighter with a live text selection turns
+            // that selection into a highlight.
+            if (ToolState.Current.Tool == AnnotationTool.Highlight)
+            {
+                ConvertSelectionToHighlight();
+            }
+
             CancelActiveInteraction();
             ClearTextSelectionVisuals();
             Rebuild(); // signature resize handles appear/disappear with the tool
             UpdateInteractivity();
         }
+    }
+
+    private void ConvertSelectionToHighlight()
+    {
+        if (Page is null ||
+            !ReferenceEquals(ToolState.Current.SelectionOwner, this) ||
+            _selectionRects is not { Count: > 0 })
+        {
+            return;
+        }
+
+        var highlight = new HighlightAnnotation { Color = ToolState.Current.HighlightColor };
+        highlight.Rects.AddRange(_selectionRects);
+        _selectionRects = null;
+        Page.Annotations.Add(highlight);
+        ToolState.Current.NotifyAnnotationAdded(Page, highlight);
+        ToolState.Current.ClearSelection();
     }
 
     private void OnSelectionOwnerChanged(object? owner)
@@ -571,6 +602,7 @@ public sealed class AnnotationCanvas : Canvas
         }
 
         _selectionShapes.Clear();
+        _selectionRects = null;
     }
 
     private static Color WithAlpha(Color c, byte alpha) => Color.FromArgb(alpha, c.R, c.G, c.B);
@@ -653,7 +685,7 @@ public sealed class AnnotationCanvas : Canvas
                     };
                     Page.Annotations.Add(annotation);
                     ToolState.Current.NotifyAnnotationAdded(Page, annotation);
-                    OpenTextEditor(annotation);
+                    _pendingEditorObject = annotation; // editor opens on release
                 }
 
                 break;
@@ -676,7 +708,7 @@ public sealed class AnnotationCanvas : Canvas
                     };
                     Page.Annotations.Add(annotation);
                     ToolState.Current.NotifyAnnotationAdded(Page, annotation);
-                    OpenCommentEditor(annotation);
+                    _pendingEditorObject = annotation; // editor opens on release
                 }
 
                 break;
@@ -868,6 +900,7 @@ public sealed class AnnotationCanvas : Canvas
                 var lines = WordSpanLines(_selectionStart, pos);
                 ToolState.Current.SetSelectedText(
                     lines is not null ? AnnotationGeometry.BuildText(lines) : string.Empty);
+                _selectionRects = lines?.Select(AnnotationGeometry.MergeLine).ToList();
                 break;
             }
 
@@ -875,6 +908,16 @@ public sealed class AnnotationCanvas : Canvas
             case AnnotationTool.Comment:
             case AnnotationTool.Signature:
                 CommitObjectInteraction(pos);
+                if (_pendingEditorObject is TextBoxAnnotation pendingText)
+                {
+                    OpenTextEditor(pendingText);
+                }
+                else if (_pendingEditorObject is CommentAnnotation pendingComment)
+                {
+                    OpenCommentEditor(pendingComment);
+                }
+
+                _pendingEditorObject = null;
                 break;
         }
 
@@ -1040,8 +1083,19 @@ public sealed class AnnotationCanvas : Canvas
         _activeEditor.LostFocus += (_, _) => CloseActiveEditor(commit: true);
 
         Rebuild(); // hides the static visual, re-adds the editor
-        _activeEditor.Focus(FocusState.Programmatic);
-        _activeEditor.SelectionStart = _activeEditor.Text.Length;
+
+        // Focus one tick later — focusing while the pointer interaction is
+        // still settling doesn't stick, and the resulting LostFocus would
+        // immediately commit-and-delete the empty box.
+        var editor = _activeEditor;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            if (ReferenceEquals(_activeEditor, editor))
+            {
+                editor.Focus(FocusState.Programmatic);
+                editor.SelectionStart = editor.Text.Length;
+            }
+        });
     }
 
     private void CloseActiveEditor(bool commit)
@@ -1194,6 +1248,7 @@ public sealed class AnnotationCanvas : Canvas
         _pressedObject = null;
         _dragOriginals = null;
         _resizingSignature = null;
+        _pendingEditorObject = null;
         _selectionAnchor = -1;
     }
 

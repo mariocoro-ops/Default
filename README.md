@@ -63,7 +63,7 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
 | Print | `Ctrl+P` or the **Print** button |
 | Draw | Pen tool (pencil icon), then drag on a page; pick color/size under the palette icon |
 | Highlight | Highlighter tool (I-beam cursor), then drag across text like selecting in any reader — words are selected in reading order with a live preview; on scanned pages it keeps your rectangle |
-| Select & copy text | Text-select tool (copy icon), drag across text, then `Ctrl+C` |
+| Select & copy text | Text-select tool (I-beam icon), drag across text, then `Ctrl+C` — or switch straight to the highlighter to highlight the selection. Selection follows columns in multi-column layouts |
 | Add text | Text tool (font icon), click a spot, type; click away to commit; click existing text to edit, drag to move; sizes under the palette icon |
 | Comment | Comment tool, click a spot, write the note; click an icon to reopen, drag to move. Saved as a real PDF sticky note |
 | Signature | Signature tool — first use asks for a scanned image (white background is made transparent automatically); then click to place, drag to move, drag the corner handle to resize. Manage the saved image under the palette icon |

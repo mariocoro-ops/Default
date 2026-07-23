@@ -1,4 +1,8 @@
 using PdfReader.Models;
+using UglyToad.PdfPig.Content;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.PageSegmenter;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.ReadingOrderDetector;
+using UglyToad.PdfPig.DocumentLayoutAnalysis.WordExtractor;
 using Windows.Foundation;
 
 namespace PdfReader.Services;
@@ -89,7 +93,7 @@ public sealed class TextGeometryService : IDisposable
 
                     double cropTop = cropBottom + cropHeight;
                     var words = new List<WordBox>();
-                    foreach (var word in page.GetWords())
+                    foreach (var word in GetWordsInReadingOrder(page))
                     {
                         var box = word.BoundingBox;
                         words.Add(new WordBox(
@@ -111,6 +115,37 @@ public sealed class TextGeometryService : IDisposable
                 }
             }
         });
+    }
+
+    /// <summary>
+    /// Words in visual reading order. The raw content-stream order runs
+    /// straight across multi-column layouts, so the page is first segmented
+    /// into text blocks (recursive XY-cut splits on whitespace gutters — i.e.
+    /// column boundaries), the blocks are put into reading order, and words
+    /// are emitted block by block, line by line. Any hiccup falls back to the
+    /// plain content-stream order.
+    /// </summary>
+    private static IEnumerable<Word> GetWordsInReadingOrder(Page page)
+    {
+        try
+        {
+            var words = page.GetWords(NearestNeighbourWordExtractor.Instance).ToList();
+            if (words.Count == 0)
+            {
+                return words;
+            }
+
+            var blocks = RecursiveXYCut.Instance.GetBlocks(words);
+            var ordered = UnsupervisedReadingOrderDetector.Instance.Get(blocks);
+            return ordered
+                .SelectMany(block => block.TextLines)
+                .SelectMany(line => line.Words)
+                .ToList();
+        }
+        catch
+        {
+            return page.GetWords();
+        }
     }
 
     public void Dispose()

@@ -84,8 +84,10 @@
                 </ToggleButton>
                 <ToggleButton x:Name="TextSelectToolButton" Click="TextSelectToolButton_Click" Padding="9"
                               IsEnabled="False"
-                              ToolTipService.ToolTip="Select text — Ctrl+C copies it">
-                    <FontIcon Glyph="&#xE8C8;" FontSize="16" />
+                              ToolTipService.ToolTip="Select text — Ctrl+C copies it, or switch to the highlighter to highlight it">
+                    <!-- Segoe Fluent has no I-beam glyph, so draw one. -->
+                    <PathIcon Width="16" Height="16"
+                              Data="M5,0 L11,0 L11,1.5 L8.75,1.5 L8.75,14.5 L11,14.5 L11,16 L5,16 L5,14.5 L7.25,14.5 L7.25,1.5 L5,1.5 Z" />
                 </ToggleButton>
                 <ToggleButton x:Name="DrawToolButton" Click="DrawToolButton_Click" Padding="9"
                               IsEnabled="False"
