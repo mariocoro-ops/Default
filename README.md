@@ -3,14 +3,14 @@
 A clean, dark-themed PDF reader and annotator for **Windows 11**, built with
 **WinUI 3** (Windows App SDK) and free/open-source PDF libraries only.
 
-![status](https://img.shields.io/badge/phase-1%20viewer-blue)
+![status](https://img.shields.io/badge/phase-2%20markup-blue)
 
 ## Feature roadmap
 
 | Phase | Features | Status |
 |---|---|---|
-| **1 — Viewer** | Open, render, scroll, zoom, fit-width, page navigation, print, drag & drop, `.pdf` file association, dark Mica UI | ✅ In this branch |
-| **2 — Markup** | Freehand drawing (InkCanvas), text highlighting, save annotations back into the PDF (PDFsharp) | Planned |
+| **1 — Viewer** | Open, render, scroll, zoom, fit-width, page navigation, print, drag & drop, `.pdf` file association, dark Mica UI | ✅ Done |
+| **2 — Markup** | Freehand pen drawing, text-aware highlighting, eraser, undo, save annotated copy (PDFsharp) | ✅ In this branch |
 | **3 — Objects** | Text boxes, sticky-note comments, pre-saved signature stamp from a scanned image | Planned |
 | **4 — Ship** | MSIX installer polish, signing, distribution | Planned |
 
@@ -18,8 +18,10 @@ A clean, dark-themed PDF reader and annotator for **Windows 11**, built with
 
 - **UI:** WinUI 3 / Windows App SDK 1.6, dark theme with Mica backdrop
 - **Rendering:** `Windows.Data.Pdf` (built into Windows — no external native binaries)
-- **Coming in later phases:** PdfPig (text geometry for highlights, Apache 2.0),
-  PDFsharp 6 (writing annotations into the PDF, MIT)
+- **Text geometry:** [PdfPig](https://github.com/UglyToad/PdfPig) (Apache 2.0) — word
+  bounding boxes so highlights snap to real text lines
+- **Saving:** [PDFsharp 6](https://github.com/empira/PDFsharp) (MIT) — draws the
+  annotations into the saved PDF
 - **Packaging:** single-project MSIX
 
 ## Building
@@ -59,6 +61,12 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
 | Zoom | `Ctrl` + `+`/`-`, `Ctrl` + mouse wheel, or the toolbar buttons |
 | Fit width | `Ctrl+0` or the fit-width button |
 | Print | `Ctrl+P` or the **Print** button |
+| Draw | Pen tool (pencil icon), then drag on a page; pick color/size under the palette icon |
+| Highlight | Highlighter tool, then drag across text — the mark snaps to the text lines underneath; on scanned pages it keeps your rectangle |
+| Erase | Eraser tool, then click (or drag over) a mark |
+| Undo | `Ctrl+Z` or the undo button |
+| Back to scrolling | `Esc` or the select tool |
+| Save | `Ctrl+S` saves an annotated **copy** — the original file is never touched |
 
 ## Architecture notes
 
@@ -71,12 +79,25 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
   high-DPI displays and after zooming.
 - Printing pre-renders pages at up to 150 DPI within a global pixel budget,
   then feeds them through the standard `PrintDocument` pipeline.
-- Annotation phases will draw on a transparent overlay above each page bitmap,
-  then write real PDF annotation objects into the file on save.
+- The document is read fully into memory: the same bytes feed the renderer
+  (`Windows.Data.Pdf`), text extraction (PdfPig), and saving (PDFsharp), and
+  the original file is never locked.
+- Annotations live on a transparent `AnnotationCanvas` overlay above each page
+  bitmap. Geometry is stored in zoom-independent page coordinates (DIPs at
+  100%), so one dataset drives display at any zoom *and* the PDF output.
+  (WinUI 3 has no `InkCanvas`, so the ink layer is custom pointer handling.)
+- On save, marks are drawn into the page content with PDFsharp in append mode
+  ("flattened"), which renders identically in every PDF viewer.
 
-## Known limitations (Phase 1)
+## Known limitations (as of Phase 2)
 
 - Password-protected PDFs show an error instead of a password prompt.
+- Saved marks are flattened into the page, so they can't be selected or
+  deleted afterwards in other PDF editors (undo works while the app is open).
+- Pages with a `/Rotate` entry or unusual crop boxes may place highlights
+  slightly off; standard documents are unaffected.
+- On touch screens, one-finger drag pans the document rather than drawing —
+  use a mouse or pen stylus for annotation.
 - `Ctrl` + mouse wheel zoom may also scroll slightly (ScrollViewer quirk);
   keyboard zoom is always clean.
 - The app logo assets are programmer-art placeholders.

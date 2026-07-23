@@ -1,25 +1,41 @@
 using System.Collections.ObjectModel;
+using System.Runtime.InteropServices.WindowsRuntime;
 using Windows.Data.Pdf;
 using Windows.Storage;
+using Windows.Storage.Streams;
 
 namespace PdfReader.ViewModels;
 
 /// <summary>
 /// The open PDF document: the underlying PdfDocument plus one PageViewModel
-/// per page. Page sizes are read up front (cheap — no rasterization) so the
-/// scroll extent is correct before any page has rendered.
+/// per page. The file is read fully into memory and the renderer is fed from
+/// that buffer, so the original file is never locked — saving over it always
+/// works — and the same bytes feed PdfPig (text geometry) and PDFsharp (save).
+/// Page sizes are read up front (cheap — no rasterization) so the scroll
+/// extent is correct before any page has rendered.
 /// </summary>
 public sealed class DocumentViewModel
 {
-    private DocumentViewModel(PdfDocument document, StorageFile file)
+    // Keeps the renderer's backing stream alive for the document's lifetime.
+    private readonly InMemoryRandomAccessStream _renderStream;
+
+    private DocumentViewModel(
+        PdfDocument document,
+        StorageFile file,
+        byte[] sourceBytes,
+        InMemoryRandomAccessStream renderStream)
     {
         Document = document;
         File = file;
+        SourceBytes = sourceBytes;
+        _renderStream = renderStream;
     }
 
     public PdfDocument Document { get; }
 
     public StorageFile File { get; }
+
+    public byte[] SourceBytes { get; }
 
     public string FileName => File.Name;
 
@@ -29,8 +45,15 @@ public sealed class DocumentViewModel
 
     public static async Task<DocumentViewModel> LoadAsync(StorageFile file)
     {
-        var document = await PdfDocument.LoadFromFileAsync(file);
-        var vm = new DocumentViewModel(document, file);
+        var buffer = await FileIO.ReadBufferAsync(file);
+        byte[] bytes = buffer.ToArray();
+
+        var stream = new InMemoryRandomAccessStream();
+        await stream.WriteAsync(bytes.AsBuffer());
+        stream.Seek(0);
+
+        var document = await PdfDocument.LoadFromStreamAsync(stream);
+        var vm = new DocumentViewModel(document, file, bytes, stream);
 
         for (uint i = 0; i < document.PageCount; i++)
         {

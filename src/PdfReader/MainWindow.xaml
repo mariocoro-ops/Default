@@ -5,6 +5,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:controls="using:PdfReader.Controls"
     mc:Ignorable="d"
     Title="Slate PDF">
 
@@ -20,10 +21,13 @@
 
         <Grid.KeyboardAccelerators>
             <KeyboardAccelerator Modifiers="Control" Key="O" Invoked="OpenAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="S" Invoked="SaveAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="P" Invoked="PrintAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="Z" Invoked="UndoAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Add" Invoked="ZoomInAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Subtract" Invoked="ZoomOutAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
+            <KeyboardAccelerator Key="Escape" Invoked="EscapeAccelerator_Invoked" />
         </Grid.KeyboardAccelerators>
 
         <Grid.RowDefinitions>
@@ -55,19 +59,84 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
 
-            <!-- Left: file commands -->
+            <!-- Left: file commands + annotation tools -->
             <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="4">
-                <Button x:Name="OpenButton" Click="OpenButton_Click" ToolTipService.ToolTip="Open a PDF (Ctrl+O)">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE8E5;" FontSize="16" />
-                        <TextBlock Text="Open" />
-                    </StackPanel>
+                <Button x:Name="OpenButton" Click="OpenButton_Click" Padding="9"
+                        ToolTipService.ToolTip="Open a PDF (Ctrl+O)">
+                    <FontIcon Glyph="&#xE8E5;" FontSize="16" />
                 </Button>
-                <Button x:Name="PrintButton" Click="PrintButton_Click" IsEnabled="False" ToolTipService.ToolTip="Print (Ctrl+P)">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <FontIcon Glyph="&#xE749;" FontSize="16" />
-                        <TextBlock Text="Print" />
-                    </StackPanel>
+                <Button x:Name="SaveButton" Click="SaveButton_Click" Padding="9" IsEnabled="False"
+                        ToolTipService.ToolTip="Save an annotated copy (Ctrl+S)">
+                    <FontIcon Glyph="&#xE74E;" FontSize="16" />
+                </Button>
+                <Button x:Name="PrintButton" Click="PrintButton_Click" Padding="9" IsEnabled="False"
+                        ToolTipService.ToolTip="Print (Ctrl+P)">
+                    <FontIcon Glyph="&#xE749;" FontSize="16" />
+                </Button>
+
+                <AppBarSeparator />
+
+                <ToggleButton x:Name="SelectToolButton" Click="SelectToolButton_Click" Padding="9"
+                              IsEnabled="False" IsChecked="True"
+                              ToolTipService.ToolTip="Select / scroll (Esc)">
+                    <FontIcon Glyph="&#xE8B0;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="DrawToolButton" Click="DrawToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Draw with the pen">
+                    <FontIcon Glyph="&#xE70F;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="HighlightToolButton" Click="HighlightToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Highlight text (drag across text)">
+                    <FontIcon Glyph="&#xE7E6;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="EraseToolButton" Click="EraseToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Erase an annotation (click it)">
+                    <FontIcon Glyph="&#xED60;" FontSize="16" />
+                </ToggleButton>
+
+                <DropDownButton x:Name="ColorsButton" Padding="9" IsEnabled="False"
+                                ToolTipService.ToolTip="Pen and highlighter options">
+                    <FontIcon Glyph="&#xE790;" FontSize="16" />
+                    <DropDownButton.Flyout>
+                        <MenuFlyout>
+                            <MenuFlyoutSubItem Text="Pen color">
+                                <RadioMenuFlyoutItem Text="Red" GroupName="penColor" Tag="#E53935"
+                                                     IsChecked="True" Click="PenColorItem_Click" />
+                                <RadioMenuFlyoutItem Text="Blue" GroupName="penColor" Tag="#1E88E5"
+                                                     Click="PenColorItem_Click" />
+                                <RadioMenuFlyoutItem Text="Green" GroupName="penColor" Tag="#43A047"
+                                                     Click="PenColorItem_Click" />
+                                <RadioMenuFlyoutItem Text="Black" GroupName="penColor" Tag="#000000"
+                                                     Click="PenColorItem_Click" />
+                            </MenuFlyoutSubItem>
+                            <MenuFlyoutSubItem Text="Pen size">
+                                <RadioMenuFlyoutItem Text="Thin" GroupName="penSize" Tag="1.5"
+                                                     Click="PenSizeItem_Click" />
+                                <RadioMenuFlyoutItem Text="Medium" GroupName="penSize" Tag="3"
+                                                     IsChecked="True" Click="PenSizeItem_Click" />
+                                <RadioMenuFlyoutItem Text="Thick" GroupName="penSize" Tag="6"
+                                                     Click="PenSizeItem_Click" />
+                            </MenuFlyoutSubItem>
+                            <MenuFlyoutSubItem Text="Highlighter color">
+                                <RadioMenuFlyoutItem Text="Yellow" GroupName="hlColor" Tag="#FFEB3B"
+                                                     IsChecked="True" Click="HighlightColorItem_Click" />
+                                <RadioMenuFlyoutItem Text="Green" GroupName="hlColor" Tag="#66BB6A"
+                                                     Click="HighlightColorItem_Click" />
+                                <RadioMenuFlyoutItem Text="Pink" GroupName="hlColor" Tag="#F06292"
+                                                     Click="HighlightColorItem_Click" />
+                            </MenuFlyoutSubItem>
+                        </MenuFlyout>
+                    </DropDownButton.Flyout>
+                </DropDownButton>
+
+                <AppBarSeparator />
+
+                <Button x:Name="UndoButton" Click="UndoButton_Click" Padding="9" IsEnabled="False"
+                        ToolTipService.ToolTip="Undo (Ctrl+Z)">
+                    <FontIcon Glyph="&#xE7A7;" FontSize="16" />
                 </Button>
             </StackPanel>
 
@@ -131,6 +200,13 @@
                                   CornerRadius="2"
                                   EffectiveViewportChanged="Page_EffectiveViewportChanged">
                                 <Image Source="{Binding Source}" Stretch="Fill" />
+                                <controls:AnnotationCanvas
+                                    Page="{Binding}"
+                                    Zoom="{Binding Zoom}"
+                                    Width="{Binding BaseWidth}"
+                                    Height="{Binding BaseHeight}"
+                                    HorizontalAlignment="Left"
+                                    VerticalAlignment="Top" />
                             </Grid>
                         </DataTemplate>
                     </ItemsRepeater.ItemTemplate>
@@ -151,6 +227,14 @@
                                  Click="OpenButton_Click"
                                  HorizontalAlignment="Center" />
             </StackPanel>
+
+            <!-- Save confirmation -->
+            <InfoBar x:Name="SaveInfoBar"
+                     Severity="Success"
+                     IsOpen="False"
+                     VerticalAlignment="Bottom"
+                     HorizontalAlignment="Center"
+                     Margin="24" />
         </Grid>
     </Grid>
 </Window>

@@ -1,8 +1,12 @@
+using System.Globalization;
 using Microsoft.UI;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using PdfReader.Models;
 using PdfReader.Services;
 using PdfReader.ViewModels;
 using Windows.ApplicationModel.DataTransfer;
@@ -26,9 +30,13 @@ public sealed partial class MainWindow : Window
         { 0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0 };
 
     private readonly PrintService _printService;
+    private readonly Stack<(PageViewModel Page, AnnotationBase Annotation, bool WasAdd)> _undoStack = new();
     private DocumentViewModel? _doc;
+    private TextGeometryService? _textService;
+    private DispatcherQueueTimer? _infoBarTimer;
     private int _currentPage = 1;
     private bool _fitWidthMode = true;
+    private bool _isModified;
 
     public MainWindow()
     {
@@ -46,6 +54,10 @@ public sealed partial class MainWindow : Window
         AppWindow.Resize(new SizeInt32(1200, 860));
 
         _printService = new PrintService(this);
+
+        // Undo bookkeeping for edits made on the page overlays.
+        ToolState.Current.AnnotationAdded += (page, annotation) => OnAnnotationEdit(page, annotation, wasAdd: true);
+        ToolState.Current.AnnotationRemoved += (page, annotation) => OnAnnotationEdit(page, annotation, wasAdd: false);
 
         // Ctrl+mouse-wheel zoom. handledEventsToo because the ScrollViewer
         // marks wheel events handled.
@@ -75,22 +87,36 @@ public sealed partial class MainWindow : Window
         _doc = doc;
         doc.SetRasterizationScale(Root.XamlRoot?.RasterizationScale ?? 1.0);
 
+        _textService?.Dispose();
+        _textService = new TextGeometryService(doc.SourceBytes);
+        ToolState.Current.WordProvider = index => _textService.GetWordRectsAsync(index);
+
+        _undoStack.Clear();
+        _isModified = false;
+        SetTool(AnnotationTool.None);
+
         PagesRepeater.ItemsSource = doc.Pages;
         EmptyState.Visibility = Visibility.Collapsed;
 
-        FileNameText.Text = $"—  {file.Name}";
-        Title = $"{file.Name} - Slate PDF";
+        UpdateTitle();
         PageCountText.Text = $"/ {doc.Pages.Count}";
         PageBox.Text = "1";
         _currentPage = 1;
 
         PrintButton.IsEnabled = _printService.IsSupported;
+        SaveButton.IsEnabled = true;
+        UndoButton.IsEnabled = false;
         PageBox.IsEnabled = true;
         PrevPageButton.IsEnabled = true;
         NextPageButton.IsEnabled = true;
         ZoomInButton.IsEnabled = true;
         ZoomOutButton.IsEnabled = true;
         FitWidthButton.IsEnabled = true;
+        SelectToolButton.IsEnabled = true;
+        DrawToolButton.IsEnabled = true;
+        HighlightToolButton.IsEnabled = true;
+        EraseToolButton.IsEnabled = true;
+        ColorsButton.IsEnabled = true;
 
         _fitWidthMode = true;
         Root.UpdateLayout();
@@ -111,6 +137,20 @@ public sealed partial class MainWindow : Window
         {
             await OpenFileAsync(file);
         }
+    }
+
+    private void UpdateTitle()
+    {
+        if (_doc is null)
+        {
+            Title = "Slate PDF";
+            FileNameText.Text = string.Empty;
+            return;
+        }
+
+        string name = _isModified ? $"{_doc.FileName} •" : _doc.FileName;
+        Title = $"{name} - Slate PDF";
+        FileNameText.Text = $"—  {name}";
     }
 
     // ---------------------------------------------------------------- drag & drop
@@ -158,6 +198,152 @@ public sealed partial class MainWindow : Window
         {
             page.Release();
         }
+    }
+
+    // ---------------------------------------------------------------- annotation tools
+
+    private void SetTool(AnnotationTool tool)
+    {
+        ToolState.Current.Tool = tool;
+        SelectToolButton.IsChecked = tool == AnnotationTool.None;
+        DrawToolButton.IsChecked = tool == AnnotationTool.Draw;
+        HighlightToolButton.IsChecked = tool == AnnotationTool.Highlight;
+        EraseToolButton.IsChecked = tool == AnnotationTool.Erase;
+    }
+
+    private void SelectToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(AnnotationTool.None);
+
+    private void DrawToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(DrawToolButton.IsChecked == true ? AnnotationTool.Draw : AnnotationTool.None);
+
+    private void HighlightToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(HighlightToolButton.IsChecked == true ? AnnotationTool.Highlight : AnnotationTool.None);
+
+    private void EraseToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(EraseToolButton.IsChecked == true ? AnnotationTool.Erase : AnnotationTool.None);
+
+    private static Windows.UI.Color ParseColor(string hex) => Windows.UI.Color.FromArgb(
+        255,
+        Convert.ToByte(hex.Substring(1, 2), 16),
+        Convert.ToByte(hex.Substring(3, 2), 16),
+        Convert.ToByte(hex.Substring(5, 2), 16));
+
+    private void PenColorItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string hex })
+        {
+            ToolState.Current.PenColor = ParseColor(hex);
+        }
+    }
+
+    private void PenSizeItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string size })
+        {
+            ToolState.Current.PenThickness = double.Parse(size, CultureInfo.InvariantCulture);
+        }
+    }
+
+    private void HighlightColorItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string hex })
+        {
+            ToolState.Current.HighlightColor = ParseColor(hex);
+        }
+    }
+
+    private void OnAnnotationEdit(PageViewModel page, AnnotationBase annotation, bool wasAdd)
+    {
+        _undoStack.Push((page, annotation, wasAdd));
+        UndoButton.IsEnabled = true;
+        if (!_isModified)
+        {
+            _isModified = true;
+            UpdateTitle();
+        }
+    }
+
+    private void Undo()
+    {
+        if (_undoStack.Count == 0)
+        {
+            return;
+        }
+
+        var (page, annotation, wasAdd) = _undoStack.Pop();
+        if (wasAdd)
+        {
+            page.Annotations.Remove(annotation);
+        }
+        else
+        {
+            page.Annotations.Add(annotation);
+        }
+
+        UndoButton.IsEnabled = _undoStack.Count > 0;
+        if (_undoStack.Count == 0 && _isModified)
+        {
+            _isModified = false;
+            UpdateTitle();
+        }
+    }
+
+    private void UndoButton_Click(object sender, RoutedEventArgs e) => Undo();
+
+    // ---------------------------------------------------------------- saving
+
+    private async void SaveButton_Click(object sender, RoutedEventArgs e) => await SaveCopyAsync();
+
+    private async Task SaveCopyAsync()
+    {
+        if (_doc is null)
+        {
+            return;
+        }
+
+        var picker = new FileSavePicker();
+        picker.FileTypeChoices.Add("PDF document", new List<string> { ".pdf" });
+        picker.SuggestedFileName =
+            System.IO.Path.GetFileNameWithoutExtension(_doc.FileName) + " (annotated)";
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        var file = await picker.PickSaveFileAsync();
+        if (file is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await PdfSaveService.SaveAsync(_doc, file.Path);
+        }
+        catch
+        {
+            await ShowErrorAsync("Save failed", $"Could not save to \"{file.Path}\".");
+            return;
+        }
+
+        _isModified = false;
+        UpdateTitle();
+        ShowSaveConfirmation(file.Path);
+    }
+
+    private void ShowSaveConfirmation(string path)
+    {
+        SaveInfoBar.Message = $"Saved to {path}";
+        SaveInfoBar.IsOpen = true;
+
+        if (_infoBarTimer is null)
+        {
+            _infoBarTimer = DispatcherQueue.CreateTimer();
+            _infoBarTimer.Interval = TimeSpan.FromSeconds(4);
+            _infoBarTimer.IsRepeating = false;
+            _infoBarTimer.Tick += (_, _) => SaveInfoBar.IsOpen = false;
+        }
+
+        _infoBarTimer.Stop();
+        _infoBarTimer.Start();
     }
 
     // ---------------------------------------------------------------- page navigation
@@ -372,10 +558,22 @@ public sealed partial class MainWindow : Window
         await PickAndOpenAsync();
     }
 
+    private async void SaveAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        await SaveCopyAsync();
+    }
+
     private async void PrintAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
         await PrintAsync();
+    }
+
+    private void UndoAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        args.Handled = true;
+        Undo();
     }
 
     private void ZoomInAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
@@ -395,6 +593,15 @@ public sealed partial class MainWindow : Window
         args.Handled = true;
         _fitWidthMode = true;
         ApplyFitWidth();
+    }
+
+    private void EscapeAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (ToolState.Current.Tool != AnnotationTool.None)
+        {
+            args.Handled = true;
+            SetTool(AnnotationTool.None);
+        }
     }
 
     // ---------------------------------------------------------------- helpers

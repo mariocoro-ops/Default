@@ -1,7 +1,9 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using PdfReader.Models;
 using Windows.Data.Pdf;
 using Windows.Storage.Streams;
 
@@ -46,6 +48,9 @@ public sealed class PageViewModel : INotifyPropertyChanged
 
     /// <summary>Display scale of the monitor, so bitmaps are rendered at native pixel density.</summary>
     public double RasterizationScale { get; set; } = 1.0;
+
+    /// <summary>Annotations on this page, in page DIPs at 100% zoom.</summary>
+    public ObservableCollection<AnnotationBase> Annotations { get; } = new();
 
     public double Zoom
     {

@@ -30,6 +30,10 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.240923002" />
+    <!-- Text geometry (word bounding boxes) for text-aware highlighting. Apache 2.0. -->
+    <PackageReference Include="PdfPig" Version="0.1.9" />
+    <!-- Writing annotations into the saved PDF. MIT. -->
+    <PackageReference Include="PdfSharp" Version="6.1.1" />
   </ItemGroup>
 
   <!-- Publish properties -->
