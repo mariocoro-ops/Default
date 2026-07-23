@@ -56,6 +56,14 @@ public sealed class AnnotationCanvas : Canvas
             UpdateInteractivity();
         };
         Unloaded += (_, _) => ToolState.Current.PropertyChanged -= OnToolStateChanged;
+
+        // WinUI 3's UIElement has no protected OnPointer* virtuals (unlike
+        // UWP's Control), so wire the pointer events directly.
+        PointerPressed += OnPointerPressed;
+        PointerMoved += OnPointerMoved;
+        PointerReleased += OnPointerReleased;
+        PointerCanceled += OnPointerCanceled;
+        PointerCaptureLost += OnPointerCaptureLost;
     }
 
     public PageViewModel? Page
@@ -188,9 +196,8 @@ public sealed class AnnotationCanvas : Canvas
 
     // ------------------------------------------------------------ pointer interaction
 
-    protected override void OnPointerPressed(PointerRoutedEventArgs e)
+    private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
-        base.OnPointerPressed(e);
         if (Page is null || _pointerActive)
         {
             return;
@@ -245,9 +252,8 @@ public sealed class AnnotationCanvas : Canvas
         }
     }
 
-    protected override void OnPointerMoved(PointerRoutedEventArgs e)
+    private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        base.OnPointerMoved(e);
         if (!_pointerActive || Page is null)
         {
             return;
@@ -294,9 +300,8 @@ public sealed class AnnotationCanvas : Canvas
         }
     }
 
-    protected override void OnPointerReleased(PointerRoutedEventArgs e)
+    private void OnPointerReleased(object sender, PointerRoutedEventArgs e)
     {
-        base.OnPointerReleased(e);
         if (!_pointerActive)
         {
             return;
@@ -342,17 +347,11 @@ public sealed class AnnotationCanvas : Canvas
         FinishInteraction(e);
     }
 
-    protected override void OnPointerCanceled(PointerRoutedEventArgs e)
-    {
-        base.OnPointerCanceled(e);
+    private void OnPointerCanceled(object sender, PointerRoutedEventArgs e) =>
         CancelActiveInteraction();
-    }
 
-    protected override void OnPointerCaptureLost(PointerRoutedEventArgs e)
-    {
-        base.OnPointerCaptureLost(e);
+    private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e) =>
         CancelActiveInteraction();
-    }
 
     private async Task CommitHighlightAsync(PageViewModel page, Rect selection)
     {

@@ -33,7 +33,7 @@ public sealed partial class MainWindow : Window
     private readonly Stack<(PageViewModel Page, AnnotationBase Annotation, bool WasAdd)> _undoStack = new();
     private DocumentViewModel? _doc;
     private TextGeometryService? _textService;
-    private DispatcherQueueTimer? _infoBarTimer;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _infoBarTimer;
     private int _currentPage = 1;
     private bool _fitWidthMode = true;
     private bool _isModified;
