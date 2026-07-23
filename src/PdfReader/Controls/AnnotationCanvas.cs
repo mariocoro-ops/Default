@@ -51,7 +51,13 @@ public sealed class AnnotationCanvas : Canvas
 
     // Hand-tool panning state
     private bool _panning;
+    private bool _handMoved; // did the grab turn into a drag (vs. a tap)?
     private Point _panStart; // window coordinates at grab
+
+    // Links on this page (normalized), so the Hand tool can follow a link on a
+    // tap. In select mode the separate LinkLayer handles clicks instead.
+    private List<PdfLink>? _pageLinks;
+    private bool _linkFetchStarted;
 
     // Live highlight-selection state
     private Point _selectionStart;
@@ -138,9 +144,11 @@ public sealed class AnnotationCanvas : Canvas
             newPage.Annotations.CollectionChanged += canvas.OnAnnotationsChanged;
         }
 
-        // Word cache and selection belong to the old page (containers recycle).
+        // Word/link caches and selection belong to the old page (containers recycle).
         canvas._pageWords = null;
         canvas._wordFetchStarted = false;
+        canvas._pageLinks = null;
+        canvas._linkFetchStarted = false;
         canvas._selectionAnchor = -1;
 
         canvas.CancelActiveInteraction();
@@ -218,6 +226,80 @@ public sealed class AnnotationCanvas : Canvas
         if (tool is AnnotationTool.Highlight or AnnotationTool.TextSelect)
         {
             EnsureWordsLoaded();
+        }
+
+        if (tool == AnnotationTool.Hand)
+        {
+            EnsureLinksLoaded();
+        }
+    }
+
+    private void EnsureLinksLoaded()
+    {
+        if (_linkFetchStarted || Page is null)
+        {
+            return;
+        }
+
+        _linkFetchStarted = true;
+        var provider = ToolState.Current.LinkProvider;
+        if (provider is null)
+        {
+            _pageLinks = new List<PdfLink>();
+            return;
+        }
+
+        _ = FetchLinksAsync(provider, Page);
+    }
+
+    private async Task FetchLinksAsync(
+        Func<uint, Task<IReadOnlyList<PdfLink>>> provider, PageViewModel page)
+    {
+        List<PdfLink> links;
+        try
+        {
+            links = (await provider(page.Index)).ToList();
+        }
+        catch
+        {
+            links = new List<PdfLink>();
+        }
+
+        if (Page == page)
+        {
+            _pageLinks = links;
+        }
+    }
+
+    private PdfLink? LinkAt(Point p)
+    {
+        if (_pageLinks is null || Width <= 0 || Height <= 0)
+        {
+            return null;
+        }
+
+        double nx = p.X / Width, ny = p.Y / Height;
+        for (int i = _pageLinks.Count - 1; i >= 0; i--)
+        {
+            var b = _pageLinks[i].NormalizedBounds;
+            if (nx >= b.X && nx <= b.X + b.Width && ny >= b.Y && ny <= b.Y + b.Height)
+            {
+                return _pageLinks[i];
+            }
+        }
+
+        return null;
+    }
+
+    private static void ActivateLink(PdfLink link)
+    {
+        if (link.IsInternal)
+        {
+            ToolState.Current.RequestNavigateToPage(link.TargetPageIndex!.Value, link.TargetTopFraction);
+        }
+        else if (link.Uri is not null)
+        {
+            ToolState.Current.RequestOpenUri(link.Uri);
         }
     }
 
@@ -648,6 +730,7 @@ public sealed class AnnotationCanvas : Canvas
                 // Track in window coordinates so the deltas we feed back into
                 // the ScrollViewer aren't themselves moved by the scrolling.
                 _panning = true;
+                _handMoved = false;
                 _panStart = e.GetCurrentPoint(null).Position;
                 ToolState.Current.NotifyPanStarted();
                 break;
@@ -777,7 +860,13 @@ public sealed class AnnotationCanvas : Canvas
             case AnnotationTool.Hand when _panning:
             {
                 var p = e.GetCurrentPoint(null).Position;
-                ToolState.Current.NotifyPanUpdated(p.X - _panStart.X, p.Y - _panStart.Y);
+                double dx = p.X - _panStart.X, dy = p.Y - _panStart.Y;
+                if (dx * dx + dy * dy > DragThresholdSquared)
+                {
+                    _handMoved = true; // it's a pan, not a link tap
+                }
+
+                ToolState.Current.NotifyPanUpdated(dx, dy);
                 break;
             }
 
@@ -881,6 +970,16 @@ public sealed class AnnotationCanvas : Canvas
 
         switch (ToolState.Current.Tool)
         {
+            case AnnotationTool.Hand:
+                // A grab that never became a drag is a click — follow a link
+                // under it, so the Hand tool navigates like the arrow does.
+                if (!_handMoved && LinkAt(_pressPos) is { } link)
+                {
+                    ActivateLink(link);
+                }
+
+                break;
+
             case AnnotationTool.Draw when page is not null && _activePoints is not null:
             {
                 var ink = new InkAnnotation

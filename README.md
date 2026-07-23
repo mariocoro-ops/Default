@@ -94,7 +94,7 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 | Open a PDF | `Ctrl+O`, the **Open** button, or drag & drop a file onto the window |
 | Navigate | Scroll, `Page Up`/`Page Down`, the arrows / page box in the toolbar |
 | Pan | Hand tool (`H`), then grab and drag the page to move it around |
-| Follow links | In select mode, click a link in the PDF — internal links jump to the target page; external links open in the browser after a confirmation |
+| Follow links | In select or hand mode, click a link in the PDF — internal links jump to the target page; external links open in the browser after a confirmation. With the hand tool, a click follows the link and a drag still pans |
 | Zoom | `Ctrl` + `+`/`-`, `Ctrl` + mouse wheel, or the toolbar buttons |
 | Fit width | `Ctrl+0` or the fit-width button |
 | Print | `Ctrl+P` or the **Print** button |
@@ -134,9 +134,11 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 - The signature image lives in `%LocalAppData%\SlatePdf\signature.png`,
   imported once and reused across documents and sessions.
 - Link annotations are read with PDFsharp (internal GoTo destinations, incl.
-  named destinations, and external URIs) and overlaid as transparent click
-  targets below the annotation layer, so they're active only in select mode
-  and never intercept the editing tools.
+  named destinations, and external URIs). In select mode a transparent
+  LinkLayer below the annotation overlay handles clicks; in hand mode the
+  overlay itself distinguishes a tap (follow the link) from a drag (pan), so
+  links work in both navigation modes without interfering with the editing
+  tools.
 
 ## Known limitations (as of Phase 3)
 
