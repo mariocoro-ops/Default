@@ -53,18 +53,29 @@ The easy way — from a PowerShell prompt at the repo root:
 ```
 
 The script finds MSBuild, creates (or reuses) a self-signed signing
-certificate matching the manifest publisher, and builds a **signed,
-self-contained** MSIX into `.\dist` — the .NET and Windows App SDK runtimes
-ship inside the package, so recipients install nothing else.
+certificate matching the manifest publisher, builds a **signed,
+self-contained** MSIX (the .NET and Windows App SDK runtimes ship inside the
+package, so recipients install nothing else), and bundles the whole sideload
+package into a single shareable zip:
 
-Give recipients the `dist` folder contents:
+```
+dist\PdfReader_1.0.0.0_x64-installer.zip
+```
 
-1. **Once per machine:** install `SlatePdf.cer` — right-click → *Install
-   Certificate* → *Local Machine* → store: **Trusted People**. (Or from an
-   admin PowerShell:
-   `Import-Certificate -FilePath SlatePdf.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople`)
-2. Double-click the `.msix` → **Install**. Updates install over the top as
-   long as they're signed with the same certificate.
+Send that zip. The recipient extracts it and installs one of two ways:
+
+1. **One click:** right-click `Add-AppDevPackage.ps1` → **Run with PowerShell**.
+   It trusts the signing certificate and installs the app (approve the admin
+   prompt). An `INSTALL.txt` in the zip spells this out for them.
+2. **Manual:** install `SlatePdf.cer` into *Local Machine → Trusted People*,
+   then double-click the `.msix`.
+
+Either way, "Slate PDF" then appears in the Start menu and as a `.pdf`
+handler. Updates install over the top as long as they're signed with the same
+certificate.
+
+To install on your own machine, run that same `Add-AppDevPackage.ps1` from the
+`dist\..._Test` folder the build produced.
 
 The signing key lives in your user certificate store (`certmgr.msc` →
 Personal → Certificates → `CN=SlatePdf`) — export it from there if you ever

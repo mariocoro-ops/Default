@@ -78,10 +78,48 @@ if ($LASTEXITCODE -ne 0) {
     throw "Build failed."
 }
 
+# ---- bundle a single shareable zip ----------------------------------------
+# MSBuild emits a "<name>_<version>_<platform>_Test" folder containing the
+# signed .msix, its dependencies, the .cer, and Microsoft's generated
+# Add-AppDevPackage.ps1 one-click installer. Zip that folder so there is one
+# artifact to hand out.
+$testFolder = Get-ChildItem -Path $dist -Directory -Filter "*_Test" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+if (-not $testFolder) {
+    throw "Could not find the generated sideload package folder under $dist."
+}
+
+# Drop a plain-English note for the recipient next to the installer script.
+$readme = @"
+Slate PDF - install
+
+1. Right-click 'Add-AppDevPackage.ps1' -> Run with PowerShell.
+   (It trusts the signing certificate, then installs the app. Approve the
+   admin prompt.) If PowerShell is blocked, run this once in an admin
+   PowerShell window from this folder:
+       Set-ExecutionPolicy -Scope Process Bypass -Force; .\Add-AppDevPackage.ps1
+
+2. 'Slate PDF' then appears in the Start menu and as a handler for .pdf files.
+
+Manual alternative: install SlatePdf.cer into Local Machine > Trusted People,
+then double-click the .msix.
+"@
+Set-Content -Path (Join-Path $testFolder.FullName "INSTALL.txt") -Value $readme -Encoding UTF8
+
+$zipPath = Join-Path $dist ("$($testFolder.Name -replace '_Test$','')-installer.zip")
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+Compress-Archive -Path (Join-Path $testFolder.FullName '*') -DestinationPath $zipPath
+
 Write-Host ""
-Write-Host "Done. Ship the contents of .\dist to recipients:" -ForegroundColor Green
-Write-Host "  1. They install SlatePdf.cer once:  right-click -> Install Certificate"
-Write-Host "     -> Local Machine -> 'Place all certificates in the following store'"
-Write-Host "     -> Trusted People. (Admin PowerShell alternative:"
-Write-Host "     Import-Certificate -FilePath SlatePdf.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople)"
-Write-Host "  2. They double-click the .msix and click Install."
+Write-Host "Installer ready:" -ForegroundColor Green
+Write-Host "  $zipPath"
+Write-Host ""
+Write-Host "Send that zip. The recipient extracts it and either:" -ForegroundColor Green
+Write-Host "  * right-clicks Add-AppDevPackage.ps1 -> Run with PowerShell (one-click), or"
+Write-Host "  * installs SlatePdf.cer into Local Machine > Trusted People, then"
+Write-Host "    double-clicks the .msix."
+Write-Host ""
+Write-Host "To install on THIS machine right now, run that same"
+Write-Host "Add-AppDevPackage.ps1 from:" -ForegroundColor Green
+Write-Host "  $($testFolder.FullName)"
