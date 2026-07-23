@@ -10,6 +10,7 @@ using PdfReader.Models;
 using PdfReader.Services;
 using PdfReader.ViewModels;
 using Windows.ApplicationModel.DataTransfer;
+using Windows.Foundation;
 using Windows.Graphics;
 using Windows.Storage;
 using Windows.Storage.Pickers;
@@ -40,6 +41,10 @@ public sealed partial class MainWindow : Window
     private bool _isModified;
     private double _panStartHorizontal;
     private double _panStartVertical;
+
+    // "Type a slide number, press Enter" quick navigation.
+    private string _gotoBuffer = string.Empty;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gotoTimer;
 
     public MainWindow()
     {
@@ -82,6 +87,36 @@ public sealed partial class MainWindow : Window
             UIElement.PointerWheelChangedEvent,
             new PointerEventHandler(Scroller_PointerWheelChanged),
             handledEventsToo: true);
+
+        RegisterSlideNumberAccelerators();
+    }
+
+    /// <summary>
+    /// Registers digit / Enter / Backspace accelerators for PowerPoint-style
+    /// "type a slide number, press Enter" navigation. Done in code because
+    /// twenty digit keys (top row + numpad) would bloat the XAML.
+    /// </summary>
+    private void RegisterSlideNumberAccelerators()
+    {
+        void Add(VirtualKey key, TypedEventHandler<KeyboardAccelerator, KeyboardAcceleratorInvokedEventArgs> handler)
+        {
+            var accelerator = new KeyboardAccelerator { Key = key };
+            accelerator.Invoked += handler;
+            Root.KeyboardAccelerators.Add(accelerator);
+        }
+
+        for (int k = (int)VirtualKey.Number0; k <= (int)VirtualKey.Number9; k++)
+        {
+            Add((VirtualKey)k, DigitAccelerator_Invoked);
+        }
+
+        for (int k = (int)VirtualKey.NumberPad0; k <= (int)VirtualKey.NumberPad9; k++)
+        {
+            Add((VirtualKey)k, DigitAccelerator_Invoked);
+        }
+
+        Add(VirtualKey.Enter, EnterAccelerator_Invoked);
+        Add(VirtualKey.Back, BackAccelerator_Invoked);
     }
 
     // ---------------------------------------------------------------- opening
@@ -114,7 +149,8 @@ public sealed partial class MainWindow : Window
 
         _undoStack.Clear();
         _isModified = false;
-        SetTool(AnnotationTool.None);
+        ClearGoto();
+        SetTool(AnnotationTool.Hand); // hand/pan is the default reading tool
 
         PagesRepeater.ItemsSource = doc.Pages;
         EmptyState.Visibility = Visibility.Collapsed;
@@ -519,7 +555,7 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void JumpToPage(int pageNumber)
+    private void JumpToPage(int pageNumber, bool animate = false)
     {
         if (_doc is null)
         {
@@ -533,7 +569,7 @@ public sealed partial class MainWindow : Window
             offset += _doc.Pages[i].DisplayHeight + PageSpacing;
         }
 
-        Scroller.ChangeView(null, offset, null, disableAnimation: true);
+        Scroller.ChangeView(null, offset, null, disableAnimation: !animate);
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
     }
@@ -803,23 +839,169 @@ public sealed partial class MainWindow : Window
 
     private void EscapeAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
-        if (ToolState.Current.Tool != AnnotationTool.None)
+        // Esc first cancels a half-typed slide number, then falls back to the
+        // hand tool (the default), so it's always a "get me back" key.
+        if (_gotoBuffer.Length > 0)
         {
+            ClearGoto();
             args.Handled = true;
-            SetTool(AnnotationTool.None);
+            return;
         }
+
+        if (_doc is not null && ToolState.Current.Tool != AnnotationTool.Hand)
+        {
+            SetTool(AnnotationTool.Hand);
+            args.Handled = true;
+            return;
+        }
+
+        args.Handled = false;
     }
 
     private void HandAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         // Don't hijack "h" while typing in a text field.
-        if (_doc is null || FocusManager.GetFocusedElement(Root.XamlRoot) is TextBox)
+        if (_doc is null || IsTextBoxFocused())
         {
+            args.Handled = false;
             return;
         }
 
         args.Handled = true;
         SetTool(ToolState.Current.Tool == AnnotationTool.Hand ? AnnotationTool.None : AnnotationTool.Hand);
+    }
+
+    // ---------------------------------------------------------------- page keys / slide number
+
+    private void PageDownAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (_doc is null || IsTextBoxFocused())
+        {
+            args.Handled = false;
+            return;
+        }
+
+        args.Handled = true;
+        JumpToPage(_currentPage + 1, animate: true);
+    }
+
+    private void PageUpAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (_doc is null || IsTextBoxFocused())
+        {
+            args.Handled = false;
+            return;
+        }
+
+        args.Handled = true;
+        JumpToPage(_currentPage - 1, animate: true);
+    }
+
+    private void DigitAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        int digit = DigitFromKey(sender.Key);
+        if (_doc is null || digit < 0 || IsTextBoxFocused())
+        {
+            args.Handled = false;
+            return;
+        }
+
+        args.Handled = true;
+
+        // Move focus off any toolbar button so Enter isn't swallowed as a
+        // button activation before our Enter accelerator sees it.
+        if (_gotoBuffer.Length == 0)
+        {
+            Scroller.Focus(FocusState.Programmatic);
+        }
+
+        if (_gotoBuffer.Length < 5) // no document has 100k pages
+        {
+            _gotoBuffer += (char)('0' + digit);
+        }
+
+        ShowGoto();
+    }
+
+    private void EnterAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        // Only act on Enter when a slide number is pending; otherwise leave
+        // Enter to whatever has focus (buttons, text fields).
+        if (_gotoBuffer.Length == 0 || IsTextBoxFocused())
+        {
+            args.Handled = false;
+            return;
+        }
+
+        args.Handled = true;
+        if (int.TryParse(_gotoBuffer, out int page))
+        {
+            JumpToPage(page, animate: true);
+        }
+
+        ClearGoto();
+    }
+
+    private void BackAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (_gotoBuffer.Length == 0 || IsTextBoxFocused())
+        {
+            args.Handled = false;
+            return;
+        }
+
+        args.Handled = true;
+        _gotoBuffer = _gotoBuffer[..^1];
+        if (_gotoBuffer.Length == 0)
+        {
+            ClearGoto();
+        }
+        else
+        {
+            ShowGoto();
+        }
+    }
+
+    private static int DigitFromKey(VirtualKey key)
+    {
+        if (key >= VirtualKey.Number0 && key <= VirtualKey.Number9)
+        {
+            return key - VirtualKey.Number0;
+        }
+
+        if (key >= VirtualKey.NumberPad0 && key <= VirtualKey.NumberPad9)
+        {
+            return key - VirtualKey.NumberPad0;
+        }
+
+        return -1;
+    }
+
+    private bool IsTextBoxFocused() => FocusManager.GetFocusedElement(Root.XamlRoot) is TextBox;
+
+    private void ShowGoto()
+    {
+        GotoText.Text = _gotoBuffer;
+        GotoIndicator.Visibility = Visibility.Visible;
+
+        // Auto-dismiss if the user pauses, matching PowerPoint's behavior.
+        if (_gotoTimer is null)
+        {
+            _gotoTimer = DispatcherQueue.CreateTimer();
+            _gotoTimer.Interval = TimeSpan.FromSeconds(3);
+            _gotoTimer.IsRepeating = false;
+            _gotoTimer.Tick += (_, _) => ClearGoto();
+        }
+
+        _gotoTimer.Stop();
+        _gotoTimer.Start();
+    }
+
+    private void ClearGoto()
+    {
+        _gotoBuffer = string.Empty;
+        GotoIndicator.Visibility = Visibility.Collapsed;
+        _gotoTimer?.Stop();
     }
 
     // ---------------------------------------------------------------- helpers

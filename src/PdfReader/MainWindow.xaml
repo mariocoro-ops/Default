@@ -30,6 +30,10 @@
             <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
             <KeyboardAccelerator Key="Escape" Invoked="EscapeAccelerator_Invoked" />
             <KeyboardAccelerator Key="H" Invoked="HandAccelerator_Invoked" />
+            <KeyboardAccelerator Key="PageDown" Invoked="PageDownAccelerator_Invoked" />
+            <KeyboardAccelerator Key="PageUp" Invoked="PageUpAccelerator_Invoked" />
+            <!-- Digit / Enter / Backspace accelerators for "type a slide number"
+                 are registered in code-behind (20 digit keys is unwieldy here). -->
         </Grid.KeyboardAccelerators>
 
         <Grid.RowDefinitions>
@@ -78,15 +82,15 @@
 
                 <AppBarSeparator />
 
-                <ToggleButton x:Name="SelectToolButton" Click="SelectToolButton_Click" Padding="9"
-                              IsEnabled="False" IsChecked="True"
-                              ToolTipService.ToolTip="Select / scroll (Esc)">
-                    <FontIcon Glyph="&#xE8B0;" FontSize="16" />
-                </ToggleButton>
                 <ToggleButton x:Name="HandToolButton" Click="HandToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Pan — grab and drag the page (H)">
+                              IsEnabled="False" IsChecked="True"
+                              ToolTipService.ToolTip="Pan — grab and drag the page, click to follow links (H). Esc returns here.">
                     <FontIcon Glyph="&#xE7C9;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="SelectToolButton" Click="SelectToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Select / scroll">
+                    <FontIcon Glyph="&#xE8B0;" FontSize="16" />
                 </ToggleButton>
                 <ToggleButton x:Name="TextSelectToolButton" Click="TextSelectToolButton_Click" Padding="9"
                               IsEnabled="False"
@@ -282,6 +286,30 @@
                      VerticalAlignment="Bottom"
                      HorizontalAlignment="Center"
                      Margin="24" />
+
+            <!-- "Type a slide number" indicator (PowerPoint-style) -->
+            <Border x:Name="GotoIndicator"
+                    Visibility="Collapsed"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="#D9000000"
+                    BorderBrush="#40FFFFFF"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    Padding="32,20">
+                <StackPanel Spacing="2" MinWidth="120">
+                    <TextBlock Text="GO TO SLIDE"
+                               FontSize="12"
+                               FontWeight="SemiBold"
+                               Foreground="#B0FFFFFF"
+                               HorizontalAlignment="Center" />
+                    <TextBlock x:Name="GotoText"
+                               FontSize="44"
+                               FontWeight="Bold"
+                               Foreground="White"
+                               HorizontalAlignment="Center" />
+                </StackPanel>
+            </Border>
         </Grid>
     </Grid>
 </Window>
