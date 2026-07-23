@@ -17,7 +17,8 @@
           RequestedTheme="Dark"
           AllowDrop="True"
           DragOver="Root_DragOver"
-          Drop="Root_Drop">
+          Drop="Root_Drop"
+          KeyboardAcceleratorPlacementMode="Hidden">
 
         <Grid.KeyboardAccelerators>
             <KeyboardAccelerator Modifiers="Control" Key="O" Invoked="OpenAccelerator_Invoked" />
@@ -230,6 +231,8 @@
                           HorizontalScrollBarVisibility="Auto"
                           HorizontalScrollMode="Enabled"
                           VerticalScrollBarVisibility="Auto"
+                          IsTabStop="True"
+                          UseSystemFocusVisuals="False"
                           ViewChanged="Scroller_ViewChanged"
                           SizeChanged="Scroller_SizeChanged">
                 <ItemsRepeater x:Name="PagesRepeater" Margin="24" HorizontalAlignment="Center">

@@ -59,6 +59,11 @@ public sealed class AnnotationCanvas : Canvas
     private List<PdfLink>? _pageLinks;
     private bool _linkFetchStarted;
 
+    // Hover tint over the link under the pointer in hand mode — matches the
+    // LinkLayer's hover color so links look the same in both modes.
+    private Rectangle? _linkHoverShape;
+    private PdfLink? _hoveredLink;
+
     // Live highlight-selection state
     private Point _selectionStart;
     private readonly List<Rectangle> _previewShapes = new();
@@ -117,6 +122,7 @@ public sealed class AnnotationCanvas : Canvas
         PointerReleased += OnPointerReleased;
         PointerCanceled += OnPointerCanceled;
         PointerCaptureLost += OnPointerCaptureLost;
+        PointerExited += (_, _) => ClearLinkHover();
     }
 
     public PageViewModel? Page
@@ -303,6 +309,45 @@ public sealed class AnnotationCanvas : Canvas
         }
     }
 
+    private void UpdateLinkHover(Point pos)
+    {
+        var link = LinkAt(pos);
+        if (ReferenceEquals(link, _hoveredLink))
+        {
+            return;
+        }
+
+        ClearLinkHover();
+        if (link is null || Width <= 0 || Height <= 0)
+        {
+            return;
+        }
+
+        _hoveredLink = link;
+        var b = link.NormalizedBounds;
+        _linkHoverShape = new Rectangle
+        {
+            Width = b.Width * Width,
+            Height = b.Height * Height,
+            Fill = new SolidColorBrush(Color.FromArgb(0x22, 0x4F, 0x8E, 0xF7)),
+            IsHitTestVisible = false,
+        };
+        SetLeft(_linkHoverShape, b.X * Width);
+        SetTop(_linkHoverShape, b.Y * Height);
+        Children.Add(_linkHoverShape);
+    }
+
+    private void ClearLinkHover()
+    {
+        if (_linkHoverShape is not null)
+        {
+            Children.Remove(_linkHoverShape);
+        }
+
+        _linkHoverShape = null;
+        _hoveredLink = null;
+    }
+
     private void OnAnnotationsChanged(object? sender, NotifyCollectionChangedEventArgs e) => Rebuild();
 
     // ------------------------------------------------------------ word geometry
@@ -444,6 +489,8 @@ public sealed class AnnotationCanvas : Canvas
         _visuals.Clear();
         _previewShapes.Clear();
         _selectionShapes.Clear();
+        _linkHoverShape = null;
+        _hoveredLink = null;
         if (Page is null)
         {
             return;
@@ -847,8 +894,20 @@ public sealed class AnnotationCanvas : Canvas
 
     private void OnPointerMoved(object sender, PointerRoutedEventArgs e)
     {
-        if (!_pointerActive || Page is null)
+        if (Page is null)
         {
+            return;
+        }
+
+        if (!_pointerActive)
+        {
+            // Hovering (no button down): in hand mode, tint the link under
+            // the pointer just like the LinkLayer does in select mode.
+            if (ToolState.Current.Tool == AnnotationTool.Hand)
+            {
+                UpdateLinkHover(Clamp(e.GetCurrentPoint(this).Position));
+            }
+
             return;
         }
 

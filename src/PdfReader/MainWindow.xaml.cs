@@ -184,6 +184,11 @@ public sealed partial class MainWindow : Window
         Root.UpdateLayout();
         ApplyFitWidth();
         Scroller.ChangeView(0, 0, null, disableAnimation: true);
+
+        // Park keyboard focus on the document, not the Open button — a
+        // focused toolbar button swallows Enter (re-opening the file picker)
+        // and surfaces its "Ctrl+O" accelerator hint at odd moments.
+        Scroller.Focus(FocusState.Programmatic);
     }
 
     private async void OpenButton_Click(object sender, RoutedEventArgs e) => await PickAndOpenAsync();
@@ -281,6 +286,14 @@ public sealed partial class MainWindow : Window
         CommentToolButton.IsChecked = tool == AnnotationTool.Comment;
         SignatureToolButton.IsChecked = tool == AnnotationTool.Signature;
         EraseToolButton.IsChecked = tool == AnnotationTool.Erase;
+
+        // Clicking a tool button leaves focus on that button, where Enter
+        // would re-toggle it and digits/goto behave inconsistently. Hand the
+        // focus back to the document after every tool change.
+        if (_doc is not null)
+        {
+            Scroller.Focus(FocusState.Programmatic);
+        }
     }
 
     private void SelectToolButton_Click(object sender, RoutedEventArgs e) =>
