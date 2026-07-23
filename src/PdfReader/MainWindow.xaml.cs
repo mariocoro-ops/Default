@@ -532,7 +532,13 @@ public sealed partial class MainWindow : Window
 
     private void Scroller_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
-        UpdateCurrentPageFromScroll();
+        // Only track once the view settles: intermediate events during an
+        // animated page jump would recompute _currentPage from a mid-flight
+        // offset and make rapid PageDown presses re-target the same page.
+        if (!e.IsIntermediate)
+        {
+            UpdateCurrentPageFromScroll();
+        }
     }
 
     private void UpdateCurrentPageFromScroll()
@@ -654,9 +660,14 @@ public sealed partial class MainWindow : Window
 
     // ---------------------------------------------------------------- zoom
 
-    private void SetZoom(double zoom, bool keepAnchor = true)
+    /// <summary>
+    /// Sets the zoom, keeping a chosen viewport point fixed over the same spot
+    /// in the document. Defaults to the viewport center; Ctrl+wheel passes the
+    /// cursor position so zooming homes in on where you're pointing.
+    /// </summary>
+    private void SetZoom(double zoom, bool keepAnchor = true, Point? anchorInViewport = null)
     {
-        if (_doc is null)
+        if (_doc is null || _doc.Pages.Count == 0)
         {
             return;
         }
@@ -668,10 +679,20 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // Keep the point at the viewport's center stable across the zoom change.
-        double anchor = keepAnchor
-            ? (Scroller.VerticalOffset + Scroller.ViewportHeight / 2) / oldZoom
-            : 0;
+        double px = anchorInViewport?.X ?? Scroller.ViewportWidth / 2;
+        double py = anchorInViewport?.Y ?? Scroller.ViewportHeight / 2;
+        double ratio = zoom / oldZoom;
+
+        // Content-space point currently under the anchor, captured before the
+        // layout changes. Horizontally the content is centered when narrower
+        // than the viewport, so subtract that centering pad to get a
+        // content-local coordinate that scales with zoom.
+        double viewportWidth = Scroller.ViewportWidth;
+        double maxPageBaseWidth = _doc.Pages.Max(p => p.BaseWidth);
+        double contentWidthOld = maxPageBaseWidth * oldZoom + ContentMargin * 2;
+        double padOld = Math.Max(0, (viewportWidth - contentWidthOld) / 2);
+        double contentX = Scroller.HorizontalOffset + px - padOld;
+        double contentY = Scroller.VerticalOffset + py;
 
         _doc.SetZoom(zoom);
         ZoomText.Text = $"{Math.Round(zoom * 100)}%";
@@ -679,12 +700,19 @@ public sealed partial class MainWindow : Window
         if (keepAnchor)
         {
             Root.UpdateLayout();
-            double newOffset = anchor * zoom - Scroller.ViewportHeight / 2;
-            Scroller.ChangeView(null, Math.Max(0, newOffset), null, disableAnimation: true);
+            double contentWidthNew = maxPageBaseWidth * zoom + ContentMargin * 2;
+            double padNew = Math.Max(0, (viewportWidth - contentWidthNew) / 2);
+            double newHorizontal = contentX * ratio + padNew - px;
+            double newVertical = contentY * ratio - py;
+            Scroller.ChangeView(
+                Math.Max(0, newHorizontal),
+                Math.Max(0, newVertical),
+                null,
+                disableAnimation: true);
         }
     }
 
-    private void StepZoom(int direction)
+    private void StepZoom(int direction, Point? anchorInViewport = null)
     {
         if (_doc is null)
         {
@@ -696,7 +724,7 @@ public sealed partial class MainWindow : Window
         double target = direction > 0
             ? ZoomPresets.FirstOrDefault(z => z > current + 0.001, MaxZoom)
             : ZoomPresets.LastOrDefault(z => z < current - 0.001, MinZoom);
-        SetZoom(target);
+        SetZoom(target, keepAnchor: true, anchorInViewport);
     }
 
     private void ApplyFitWidth()
@@ -747,8 +775,8 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        int delta = e.GetCurrentPoint(Scroller).Properties.MouseWheelDelta;
-        StepZoom(delta > 0 ? +1 : -1);
+        var point = e.GetCurrentPoint(Scroller);
+        StepZoom(point.Properties.MouseWheelDelta > 0 ? +1 : -1, point.Position);
         e.Handled = true;
     }
 
@@ -886,28 +914,37 @@ public sealed partial class MainWindow : Window
 
     // ---------------------------------------------------------------- page keys / slide number
 
-    private void PageDownAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    /// <summary>
+    /// Page/document navigation keys, handled on the tunneling preview pass so
+    /// they preempt the focused ScrollViewer's built-in handling (which scrolls
+    /// by a screenful and would fight the page-snapped jumps).
+    /// </summary>
+    private void Root_PreviewKeyDown(object sender, KeyRoutedEventArgs e)
     {
         if (_doc is null || IsTextBoxFocused())
         {
-            args.Handled = false;
             return;
         }
 
-        args.Handled = true;
-        JumpToPage(_currentPage + 1, animate: true);
-    }
-
-    private void PageUpAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
-    {
-        if (_doc is null || IsTextBoxFocused())
+        switch (e.Key)
         {
-            args.Handled = false;
-            return;
+            case VirtualKey.PageDown:
+                JumpToPage(_currentPage + 1, animate: true);
+                break;
+            case VirtualKey.PageUp:
+                JumpToPage(_currentPage - 1, animate: true);
+                break;
+            case VirtualKey.Home:
+                JumpToPage(1, animate: true);
+                break;
+            case VirtualKey.End:
+                JumpToPage(_doc.Pages.Count, animate: true);
+                break;
+            default:
+                return;
         }
 
-        args.Handled = true;
-        JumpToPage(_currentPage - 1, animate: true);
+        e.Handled = true;
     }
 
     private void DigitAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)

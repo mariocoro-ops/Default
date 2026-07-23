@@ -92,11 +92,11 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 | Action | How |
 |---|---|
 | Open a PDF | `Ctrl+O`, the **Open** button, or drag & drop a file onto the window |
-| Navigate | Scroll, or `Page Down`/`Page Up` to advance one slide at a time; the arrows / page box in the toolbar |
+| Navigate | Scroll, or `Page Down`/`Page Up` to advance one slide at a time; `Home`/`End` for the first/last page; the arrows / page box in the toolbar |
 | Go to slide | Just type the slide number and press `Enter` (works anywhere, like PowerPoint) — `Backspace` edits, `Esc` cancels |
 | Pan | The hand tool is the default: grab and drag the page to move it around (`H` toggles it; `Esc` returns to it) |
 | Follow links | In select or hand mode, click a link in the PDF — internal links jump to the target page; external links open in the browser after a confirmation. With the hand tool, a click follows the link and a drag still pans |
-| Zoom | `Ctrl` + `+`/`-`, `Ctrl` + mouse wheel, or the toolbar buttons |
+| Zoom | `Ctrl` + `+`/`-`, `Ctrl` + mouse wheel (zooms toward the cursor), or the toolbar buttons |
 | Fit width | `Ctrl+0` or the fit-width button |
 | Print | `Ctrl+P` or the **Print** button |
 | Draw | Pen tool (pencil icon), then drag on a page; pick color/size under the palette icon |

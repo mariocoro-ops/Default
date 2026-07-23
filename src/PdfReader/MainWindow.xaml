@@ -18,7 +18,8 @@
           AllowDrop="True"
           DragOver="Root_DragOver"
           Drop="Root_Drop"
-          KeyboardAcceleratorPlacementMode="Hidden">
+          KeyboardAcceleratorPlacementMode="Hidden"
+          PreviewKeyDown="Root_PreviewKeyDown">
 
         <Grid.KeyboardAccelerators>
             <KeyboardAccelerator Modifiers="Control" Key="O" Invoked="OpenAccelerator_Invoked" />
@@ -31,9 +32,9 @@
             <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
             <KeyboardAccelerator Key="Escape" Invoked="EscapeAccelerator_Invoked" />
             <KeyboardAccelerator Key="H" Invoked="HandAccelerator_Invoked" />
-            <KeyboardAccelerator Key="PageDown" Invoked="PageDownAccelerator_Invoked" />
-            <KeyboardAccelerator Key="PageUp" Invoked="PageUpAccelerator_Invoked" />
-            <!-- Digit / Enter / Backspace accelerators for "type a slide number"
+            <!-- PageUp/PageDown/Home/End are handled in Root_PreviewKeyDown so
+                 they preempt the focused ScrollViewer's own screenful-scroll.
+                 Digit / Enter / Backspace accelerators for "type a slide number"
                  are registered in code-behind (20 digit keys is unwieldy here). -->
         </Grid.KeyboardAccelerators>
 
