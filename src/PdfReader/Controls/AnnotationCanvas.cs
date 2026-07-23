@@ -4,6 +4,7 @@ using Microsoft.UI;
 using Microsoft.UI.Input;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
@@ -18,19 +19,18 @@ namespace PdfReader.Controls;
 
 /// <summary>
 /// Transparent interactive layer above each page bitmap. Renders the page's
-/// annotations and handles the Draw / Highlight / Erase tools. The canvas is
-/// laid out at the page's 100%-zoom size and scaled with a RenderTransform,
-/// so all pointer coordinates arrive already in zoom-independent page DIPs.
-///
-/// Highlighting works like text selection in a normal PDF reader: the drag
-/// selects words in reading order between the anchor and the pointer (full
-/// lines in the middle, partial first/last lines), with a live preview. On
-/// pages without extractable text it falls back to a freeform rectangle.
+/// annotations and handles every editing tool: text selection (with copy),
+/// pen, highlighter, text boxes, comments, signature stamps, and the eraser.
+/// The canvas is laid out at the page's 100%-zoom size and scaled with a
+/// RenderTransform, so all pointer coordinates arrive already in
+/// zoom-independent page DIPs.
 /// </summary>
 public sealed class AnnotationCanvas : Canvas
 {
     private const byte HighlightAlpha = 0x73;
-    private const double AnchorSnapDistance = 25.0; // DIPs — press must be near text to enter selection mode
+    private const double AnchorSnapDistance = 25.0; // DIPs — press must be near text to snap
+    private const double DragThresholdSquared = 16.0; // ~4 DIPs before a press becomes a drag
+    private const double ResizeHandleSize = 12.0;
 
     public static readonly DependencyProperty PageProperty = DependencyProperty.Register(
         nameof(Page), typeof(PageViewModel), typeof(AnnotationCanvas),
@@ -41,6 +41,7 @@ public sealed class AnnotationCanvas : Canvas
         new PropertyMetadata(1.0, OnZoomChanged));
 
     private readonly ScaleTransform _scale = new();
+    private readonly Dictionary<AnnotationBase, List<FrameworkElement>> _visuals = new();
 
     // Live drawing state
     private Polyline? _activeStroke;
@@ -52,8 +53,25 @@ public sealed class AnnotationCanvas : Canvas
     private Point _selectionStart;
     private readonly List<Rectangle> _previewShapes = new();
 
+    // Text-selection state (TextSelect tool)
+    private int _selectionAnchor = -1;
+    private readonly List<Rectangle> _selectionShapes = new();
+
+    // Object interaction state (Text / Comment / Signature tools)
+    private AnnotationBase? _pressedObject;
+    private Point _pressPos;
+    private bool _dragMoved;
+    private List<(FrameworkElement Element, double Left, double Top)>? _dragOriginals;
+    private SignatureAnnotation? _resizingSignature;
+    private Rect _resizeStartBounds;
+
+    // In-place text editor
+    private TextBox? _activeEditor;
+    private TextBoxAnnotation? _editingAnnotation;
+    private bool _closingEditor;
+
     // Word boxes for this page (base DIPs, reading order), fetched lazily.
-    private List<Rect>? _pageWords;
+    private List<WordBox>? _pageWords;
     private bool _wordFetchStarted;
 
     public AnnotationCanvas()
@@ -66,9 +84,14 @@ public sealed class AnnotationCanvas : Canvas
         Loaded += (_, _) =>
         {
             ToolState.Current.PropertyChanged += OnToolStateChanged;
+            ToolState.Current.SelectionOwnerChanged += OnSelectionOwnerChanged;
             UpdateInteractivity();
         };
-        Unloaded += (_, _) => ToolState.Current.PropertyChanged -= OnToolStateChanged;
+        Unloaded += (_, _) =>
+        {
+            ToolState.Current.PropertyChanged -= OnToolStateChanged;
+            ToolState.Current.SelectionOwnerChanged -= OnSelectionOwnerChanged;
+        };
 
         // WinUI 3's UIElement has no protected OnPointer* virtuals (unlike
         // UWP's Control), so wire the pointer events directly.
@@ -104,9 +127,10 @@ public sealed class AnnotationCanvas : Canvas
             newPage.Annotations.CollectionChanged += canvas.OnAnnotationsChanged;
         }
 
-        // Word cache belongs to the old page (containers get recycled).
+        // Word cache and selection belong to the old page (containers recycle).
         canvas._pageWords = null;
         canvas._wordFetchStarted = false;
+        canvas._selectionAnchor = -1;
 
         canvas.CancelActiveInteraction();
         canvas.Rebuild();
@@ -124,7 +148,17 @@ public sealed class AnnotationCanvas : Canvas
         if (e.PropertyName == nameof(ToolState.Tool))
         {
             CancelActiveInteraction();
+            ClearTextSelectionVisuals();
+            Rebuild(); // signature resize handles appear/disappear with the tool
             UpdateInteractivity();
+        }
+    }
+
+    private void OnSelectionOwnerChanged(object? owner)
+    {
+        if (!ReferenceEquals(owner, this))
+        {
+            ClearTextSelectionVisuals();
         }
     }
 
@@ -135,13 +169,17 @@ public sealed class AnnotationCanvas : Canvas
 
         ProtectedCursor = tool switch
         {
+            AnnotationTool.TextSelect => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
             AnnotationTool.Highlight => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
+            AnnotationTool.Text => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
             AnnotationTool.Draw => InputSystemCursor.Create(InputSystemCursorShape.Cross),
+            AnnotationTool.Comment => InputSystemCursor.Create(InputSystemCursorShape.Arrow),
+            AnnotationTool.Signature => InputSystemCursor.Create(InputSystemCursorShape.Arrow),
             AnnotationTool.Erase => InputSystemCursor.Create(InputSystemCursorShape.Hand),
             _ => null,
         };
 
-        if (tool == AnnotationTool.Highlight)
+        if (tool is AnnotationTool.Highlight or AnnotationTool.TextSelect)
         {
             EnsureWordsLoaded();
         }
@@ -162,7 +200,7 @@ public sealed class AnnotationCanvas : Canvas
         var provider = ToolState.Current.WordProvider;
         if (provider is null)
         {
-            _pageWords = new List<Rect>();
+            _pageWords = new List<WordBox>();
             return;
         }
 
@@ -170,25 +208,27 @@ public sealed class AnnotationCanvas : Canvas
     }
 
     private async Task FetchWordsAsync(
-        Func<uint, Task<IReadOnlyList<Rect>>> provider, PageViewModel page)
+        Func<uint, Task<IReadOnlyList<WordBox>>> provider, PageViewModel page)
     {
-        List<Rect> words;
+        List<WordBox> words;
         try
         {
             // Provider results are normalized (0..1); scale to this page's
             // base size so everything downstream is in page DIPs.
             var normalized = await provider(page.Index);
             words = normalized
-                .Select(n => new Rect(
-                    n.X * page.BaseWidth,
-                    n.Y * page.BaseHeight,
-                    n.Width * page.BaseWidth,
-                    n.Height * page.BaseHeight))
+                .Select(w => new WordBox(
+                    new Rect(
+                        w.Bounds.X * page.BaseWidth,
+                        w.Bounds.Y * page.BaseHeight,
+                        w.Bounds.Width * page.BaseWidth,
+                        w.Bounds.Height * page.BaseHeight),
+                    w.Text))
                 .ToList();
         }
         catch
         {
-            words = new List<Rect>();
+            words = new List<WordBox>();
         }
 
         if (Page == page)
@@ -212,7 +252,7 @@ public sealed class AnnotationCanvas : Canvas
         double bestDistance = double.MaxValue;
         for (int i = 0; i < _pageWords.Count; i++)
         {
-            var r = _pageWords[i];
+            var r = _pageWords[i].Bounds;
             double dx = Math.Max(Math.Max(r.Left - p.X, 0), p.X - r.Right);
             double dy = Math.Max(Math.Max(r.Top - p.Y, 0), p.Y - r.Bottom);
             if (dx <= 0 && dy <= 0)
@@ -231,6 +271,32 @@ public sealed class AnnotationCanvas : Canvas
         return bestDistance <= maxDistance ? best : null;
     }
 
+    private List<List<WordBox>>? WordSpanLines(Point anchor, Point current)
+    {
+        if (_pageWords is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        int? anchorIndex = WordIndexAt(anchor, AnchorSnapDistance);
+        if (!anchorIndex.HasValue)
+        {
+            return null;
+        }
+
+        // Once anchored to text, the far end snaps to the nearest word no
+        // matter how far the pointer strays.
+        int? currentIndex = WordIndexAt(current, double.MaxValue);
+        if (!currentIndex.HasValue)
+        {
+            return null;
+        }
+
+        int lo = Math.Min(anchorIndex.Value, currentIndex.Value);
+        int hi = Math.Max(anchorIndex.Value, currentIndex.Value);
+        return AnnotationGeometry.GroupIntoLines(_pageWords.GetRange(lo, hi - lo + 1));
+    }
+
     /// <summary>
     /// The highlight rectangles for the current drag: words between anchor and
     /// pointer in reading order when the drag started on text, else the raw
@@ -238,22 +304,11 @@ public sealed class AnnotationCanvas : Canvas
     /// </summary>
     private List<Rect> ComputeHighlightRects(Point anchor, Point current, out bool snappedToText)
     {
-        if (_pageWords is { Count: > 0 })
+        var lines = WordSpanLines(anchor, current);
+        if (lines is not null)
         {
-            int? anchorIndex = WordIndexAt(anchor, AnchorSnapDistance);
-            if (anchorIndex.HasValue)
-            {
-                // Once anchored to text, the far end snaps to the nearest word
-                // no matter how far the pointer strays.
-                int? currentIndex = WordIndexAt(current, double.MaxValue);
-                if (currentIndex.HasValue)
-                {
-                    snappedToText = true;
-                    int lo = Math.Min(anchorIndex.Value, currentIndex.Value);
-                    int hi = Math.Max(anchorIndex.Value, currentIndex.Value);
-                    return AnnotationGeometry.MergeIntoLines(_pageWords.GetRange(lo, hi - lo + 1));
-                }
-            }
+            snappedToText = true;
+            return lines.Select(AnnotationGeometry.MergeLine).ToList();
         }
 
         snappedToText = false;
@@ -268,7 +323,9 @@ public sealed class AnnotationCanvas : Canvas
     private void Rebuild()
     {
         Children.Clear();
+        _visuals.Clear();
         _previewShapes.Clear();
+        _selectionShapes.Clear();
         if (Page is null)
         {
             return;
@@ -276,12 +333,31 @@ public sealed class AnnotationCanvas : Canvas
 
         foreach (var annotation in Page.Annotations)
         {
+            if (annotation == _editingAnnotation)
+            {
+                continue; // its in-place editor stands in for the visual
+            }
+
             AddShapesFor(annotation);
+        }
+
+        if (_activeEditor is not null)
+        {
+            Children.Add(_activeEditor);
         }
     }
 
     private void AddShapesFor(AnnotationBase annotation)
     {
+        var elements = new List<FrameworkElement>();
+        _visuals[annotation] = elements;
+
+        void Add(FrameworkElement element)
+        {
+            elements.Add(element);
+            Children.Add(element);
+        }
+
         switch (annotation)
         {
             case HighlightAnnotation highlight:
@@ -292,7 +368,92 @@ public sealed class AnnotationCanvas : Canvas
                     var rect = new Rectangle { Width = r.Width, Height = r.Height, Fill = fill };
                     SetLeft(rect, r.X);
                     SetTop(rect, r.Y);
-                    Children.Add(rect);
+                    Add(rect);
+                }
+
+                break;
+            }
+
+            case TextBoxAnnotation text:
+            {
+                var block = new TextBlock
+                {
+                    Text = text.Text,
+                    FontSize = text.FontSize,
+                    Foreground = new SolidColorBrush(text.Color),
+                    TextWrapping = TextWrapping.NoWrap,
+                };
+                block.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                text.RenderSize = new Size(block.DesiredSize.Width, block.DesiredSize.Height);
+                SetLeft(block, text.Position.X);
+                SetTop(block, text.Position.Y);
+                Add(block);
+                break;
+            }
+
+            case CommentAnnotation comment:
+            {
+                var icon = new Border
+                {
+                    Width = CommentAnnotation.IconSize,
+                    Height = CommentAnnotation.IconSize,
+                    CornerRadius = new CornerRadius(4),
+                    Background = new SolidColorBrush(Color.FromArgb(255, 0xFF, 0xC1, 0x07)),
+                    Child = new FontIcon
+                    {
+                        Glyph = "\uE90A", // Comment
+                        FontSize = 12,
+                        Foreground = new SolidColorBrush(Color.FromArgb(255, 0x20, 0x20, 0x20)),
+                    },
+                };
+                SetLeft(icon, comment.Position.X);
+                SetTop(icon, comment.Position.Y);
+                Add(icon);
+                break;
+            }
+
+            case SignatureAnnotation signature:
+            {
+                var b = signature.Bounds;
+                FrameworkElement visual;
+                if (SignatureStore.CachedBitmap is { } bitmap)
+                {
+                    visual = new Image
+                    {
+                        Source = bitmap,
+                        Stretch = Stretch.Fill,
+                        Width = b.Width,
+                        Height = b.Height,
+                    };
+                }
+                else
+                {
+                    visual = new Rectangle
+                    {
+                        Width = b.Width,
+                        Height = b.Height,
+                        Fill = new SolidColorBrush(Color.FromArgb(0x40, 0x80, 0x80, 0x80)),
+                    };
+                }
+
+                SetLeft(visual, b.X);
+                SetTop(visual, b.Y);
+                Add(visual);
+
+                if (ToolState.Current.Tool == AnnotationTool.Signature)
+                {
+                    // Bottom-right resize handle, shown while the tool is active.
+                    var handle = new Rectangle
+                    {
+                        Width = ResizeHandleSize,
+                        Height = ResizeHandleSize,
+                        Fill = new SolidColorBrush(Color.FromArgb(255, 0x4F, 0x8E, 0xF7)),
+                        RadiusX = 2,
+                        RadiusY = 2,
+                    };
+                    SetLeft(handle, b.Right - ResizeHandleSize / 2);
+                    SetTop(handle, b.Bottom - ResizeHandleSize / 2);
+                    Add(handle);
                 }
 
                 break;
@@ -311,7 +472,7 @@ public sealed class AnnotationCanvas : Canvas
                     };
                     SetLeft(dot, p.X - ink.Thickness / 2);
                     SetTop(dot, p.Y - ink.Thickness / 2);
-                    Children.Add(dot);
+                    Add(dot);
                     break;
                 }
 
@@ -326,7 +487,7 @@ public sealed class AnnotationCanvas : Canvas
                 var geometry = new PathGeometry();
                 geometry.Figures.Add(figure);
 
-                Children.Add(new ShapePath
+                Add(new ShapePath
                 {
                     Data = geometry,
                     Stroke = new SolidColorBrush(ink.Color),
@@ -367,6 +528,31 @@ public sealed class AnnotationCanvas : Canvas
         }
     }
 
+    private void UpdateTextSelectionVisuals(Point current)
+    {
+        ClearTextSelectionVisuals();
+
+        var lines = WordSpanLines(_selectionStart, current);
+        if (lines is null)
+        {
+            return;
+        }
+
+        foreach (var r in lines.Select(AnnotationGeometry.MergeLine))
+        {
+            var shape = new Rectangle
+            {
+                Width = r.Width,
+                Height = r.Height,
+                Fill = new SolidColorBrush(Color.FromArgb(0x55, 0x33, 0x99, 0xFF)),
+            };
+            SetLeft(shape, r.X);
+            SetTop(shape, r.Y);
+            _selectionShapes.Add(shape);
+            Children.Add(shape);
+        }
+    }
+
     private void ClearPreview()
     {
         foreach (var shape in _previewShapes)
@@ -375,6 +561,16 @@ public sealed class AnnotationCanvas : Canvas
         }
 
         _previewShapes.Clear();
+    }
+
+    private void ClearTextSelectionVisuals()
+    {
+        foreach (var shape in _selectionShapes)
+        {
+            Children.Remove(shape);
+        }
+
+        _selectionShapes.Clear();
     }
 
     private static Color WithAlpha(Color c, byte alpha) => Color.FromArgb(alpha, c.R, c.G, c.B);
@@ -394,9 +590,19 @@ public sealed class AnnotationCanvas : Canvas
             return;
         }
 
+        // Clicking anywhere while a text editor is open commits it first.
+        if (_activeEditor is not null)
+        {
+            CloseActiveEditor(commit: true);
+            e.Handled = true;
+            return;
+        }
+
         var pos = Clamp(e.GetCurrentPoint(this).Position);
         CapturePointer(e.Pointer);
         _pointerActive = true;
+        _pressPos = pos;
+        _dragMoved = false;
         e.Handled = true;
 
         switch (tool)
@@ -422,6 +628,89 @@ public sealed class AnnotationCanvas : Canvas
                 UpdateHighlightPreview(pos);
                 break;
 
+            case AnnotationTool.TextSelect:
+                EnsureWordsLoaded();
+                ToolState.Current.ClaimSelection(this);
+                _selectionStart = pos;
+                _selectionAnchor = WordIndexAt(pos, AnchorSnapDistance) ?? -1;
+                ClearTextSelectionVisuals();
+                break;
+
+            case AnnotationTool.Text:
+            {
+                var hit = FindObjectAt<TextBoxAnnotation>(pos);
+                if (hit is not null)
+                {
+                    BeginObjectPress(hit);
+                }
+                else
+                {
+                    var annotation = new TextBoxAnnotation
+                    {
+                        Position = pos,
+                        FontSize = ToolState.Current.FontSize,
+                        Color = ToolState.Current.PenColor,
+                    };
+                    Page.Annotations.Add(annotation);
+                    ToolState.Current.NotifyAnnotationAdded(Page, annotation);
+                    OpenTextEditor(annotation);
+                }
+
+                break;
+            }
+
+            case AnnotationTool.Comment:
+            {
+                var hit = FindObjectAt<CommentAnnotation>(pos);
+                if (hit is not null)
+                {
+                    BeginObjectPress(hit);
+                }
+                else
+                {
+                    var annotation = new CommentAnnotation
+                    {
+                        Position = new Point(
+                            Math.Max(0, pos.X - CommentAnnotation.IconSize / 2),
+                            Math.Max(0, pos.Y - CommentAnnotation.IconSize / 2)),
+                    };
+                    Page.Annotations.Add(annotation);
+                    ToolState.Current.NotifyAnnotationAdded(Page, annotation);
+                    OpenCommentEditor(annotation);
+                }
+
+                break;
+            }
+
+            case AnnotationTool.Signature:
+            {
+                var onHandle = FindSignatureHandleAt(pos);
+                if (onHandle is not null)
+                {
+                    _resizingSignature = onHandle;
+                    _resizeStartBounds = onHandle.Bounds;
+                }
+                else if (FindObjectAt<SignatureAnnotation>(pos) is { } hit)
+                {
+                    BeginObjectPress(hit);
+                }
+                else if (SignatureStore.HasSignature)
+                {
+                    double width = Math.Min(180, Width * 0.4);
+                    double height = width / Math.Max(0.1, SignatureStore.AspectRatio);
+                    var bounds = new Rect(
+                        Math.Clamp(pos.X - width / 2, 0, Math.Max(0, Width - width)),
+                        Math.Clamp(pos.Y - height / 2, 0, Math.Max(0, Height - height)),
+                        width,
+                        height);
+                    var annotation = new SignatureAnnotation { Bounds = bounds };
+                    Page.Annotations.Add(annotation);
+                    ToolState.Current.NotifyAnnotationAdded(Page, annotation);
+                }
+
+                break;
+            }
+
             case AnnotationTool.Erase:
                 EraseAt(pos);
                 break;
@@ -436,6 +725,8 @@ public sealed class AnnotationCanvas : Canvas
         }
 
         e.Handled = true;
+        var pos = Clamp(e.GetCurrentPoint(this).Position);
+
         switch (ToolState.Current.Tool)
         {
             case AnnotationTool.Draw when _activeStroke is not null && _activePoints is not null:
@@ -460,12 +751,68 @@ public sealed class AnnotationCanvas : Canvas
             }
 
             case AnnotationTool.Highlight:
-                UpdateHighlightPreview(Clamp(e.GetCurrentPoint(this).Position));
+                UpdateHighlightPreview(pos);
+                break;
+
+            case AnnotationTool.TextSelect when _selectionAnchor >= 0:
+                UpdateTextSelectionVisuals(pos);
+                break;
+
+            case AnnotationTool.Text:
+            case AnnotationTool.Comment:
+            case AnnotationTool.Signature:
+                UpdateObjectDrag(pos);
                 break;
 
             case AnnotationTool.Erase:
-                EraseAt(Clamp(e.GetCurrentPoint(this).Position));
+                EraseAt(pos);
                 break;
+        }
+    }
+
+    private void UpdateObjectDrag(Point pos)
+    {
+        if (_resizingSignature is not null)
+        {
+            double aspect = Math.Max(0.1, SignatureStore.AspectRatio);
+            double newWidth = Math.Clamp(
+                _resizeStartBounds.Width + (pos.X - _pressPos.X), 40, Math.Max(40, Width));
+            double newHeight = newWidth / aspect;
+
+            if (_visuals.TryGetValue(_resizingSignature, out var elements) && elements.Count > 0)
+            {
+                elements[0].Width = newWidth;
+                elements[0].Height = newHeight;
+                if (elements.Count > 1)
+                {
+                    SetLeft(elements[1], _resizeStartBounds.X + newWidth - ResizeHandleSize / 2);
+                    SetTop(elements[1], _resizeStartBounds.Y + newHeight - ResizeHandleSize / 2);
+                }
+            }
+
+            _dragMoved = true;
+            return;
+        }
+
+        if (_pressedObject is null)
+        {
+            return;
+        }
+
+        double dx = pos.X - _pressPos.X, dy = pos.Y - _pressPos.Y;
+        if (!_dragMoved && dx * dx + dy * dy < DragThresholdSquared)
+        {
+            return;
+        }
+
+        _dragMoved = true;
+        if (_dragOriginals is not null)
+        {
+            foreach (var (element, left, top) in _dragOriginals)
+            {
+                SetLeft(element, left + dx);
+                SetTop(element, top + dy);
+            }
         }
     }
 
@@ -514,9 +861,86 @@ public sealed class AnnotationCanvas : Canvas
 
                 break;
             }
+
+            case AnnotationTool.TextSelect when _selectionAnchor >= 0:
+            {
+                UpdateTextSelectionVisuals(pos);
+                var lines = WordSpanLines(_selectionStart, pos);
+                ToolState.Current.SetSelectedText(
+                    lines is not null ? AnnotationGeometry.BuildText(lines) : string.Empty);
+                break;
+            }
+
+            case AnnotationTool.Text:
+            case AnnotationTool.Comment:
+            case AnnotationTool.Signature:
+                CommitObjectInteraction(pos);
+                break;
         }
 
         FinishInteraction(e);
+    }
+
+    private void CommitObjectInteraction(Point pos)
+    {
+        if (_resizingSignature is not null)
+        {
+            if (_dragMoved)
+            {
+                double aspect = Math.Max(0.1, SignatureStore.AspectRatio);
+                double newWidth = Math.Clamp(
+                    _resizeStartBounds.Width + (pos.X - _pressPos.X), 40, Math.Max(40, Width));
+                _resizingSignature.Bounds = new Rect(
+                    _resizeStartBounds.X, _resizeStartBounds.Y, newWidth, newWidth / aspect);
+                Rebuild();
+            }
+
+            _resizingSignature = null;
+            return;
+        }
+
+        if (_pressedObject is null)
+        {
+            return;
+        }
+
+        var pressed = _pressedObject;
+        _pressedObject = null;
+        _dragOriginals = null;
+
+        if (_dragMoved)
+        {
+            double dx = pos.X - _pressPos.X, dy = pos.Y - _pressPos.Y;
+            switch (pressed)
+            {
+                case TextBoxAnnotation text:
+                    text.Position = new Point(text.Position.X + dx, text.Position.Y + dy);
+                    break;
+                case CommentAnnotation comment:
+                    comment.Position = new Point(comment.Position.X + dx, comment.Position.Y + dy);
+                    break;
+                case SignatureAnnotation signature:
+                    signature.Bounds = new Rect(
+                        signature.Bounds.X + dx, signature.Bounds.Y + dy,
+                        signature.Bounds.Width, signature.Bounds.Height);
+                    break;
+            }
+
+            Rebuild();
+        }
+        else
+        {
+            // A click (no drag) opens the object's editor.
+            switch (pressed)
+            {
+                case TextBoxAnnotation text:
+                    OpenTextEditor(text);
+                    break;
+                case CommentAnnotation comment:
+                    OpenCommentEditor(comment);
+                    break;
+            }
+        }
     }
 
     private void OnPointerCanceled(object sender, PointerRoutedEventArgs e) =>
@@ -524,6 +948,200 @@ public sealed class AnnotationCanvas : Canvas
 
     private void OnPointerCaptureLost(object sender, PointerRoutedEventArgs e) =>
         CancelActiveInteraction();
+
+    // ------------------------------------------------------------ object helpers
+
+    private void BeginObjectPress(AnnotationBase annotation)
+    {
+        _pressedObject = annotation;
+        _dragOriginals = _visuals.TryGetValue(annotation, out var elements)
+            ? elements.Select(el => (el, GetLeft(el), GetTop(el))).ToList()
+            : null;
+    }
+
+    private T? FindObjectAt<T>(Point pos)
+        where T : AnnotationBase
+    {
+        if (Page is null)
+        {
+            return null;
+        }
+
+        for (int i = Page.Annotations.Count - 1; i >= 0; i--)
+        {
+            if (Page.Annotations[i] is T match &&
+                AnnotationGeometry.Contains(GetObjectBounds(match), pos, 2))
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private SignatureAnnotation? FindSignatureHandleAt(Point pos)
+    {
+        if (Page is null)
+        {
+            return null;
+        }
+
+        for (int i = Page.Annotations.Count - 1; i >= 0; i--)
+        {
+            if (Page.Annotations[i] is SignatureAnnotation signature)
+            {
+                var b = signature.Bounds;
+                var handle = new Rect(
+                    b.Right - ResizeHandleSize / 2, b.Bottom - ResizeHandleSize / 2,
+                    ResizeHandleSize, ResizeHandleSize);
+                if (AnnotationGeometry.Contains(handle, pos, 4))
+                {
+                    return signature;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static Rect GetObjectBounds(AnnotationBase annotation) => annotation switch
+    {
+        TextBoxAnnotation text => new Rect(
+            text.Position.X,
+            text.Position.Y,
+            Math.Max(40, text.RenderSize.Width),
+            Math.Max(20, text.RenderSize.Height)),
+        CommentAnnotation comment => new Rect(
+            comment.Position.X, comment.Position.Y, CommentAnnotation.IconSize, CommentAnnotation.IconSize),
+        SignatureAnnotation signature => signature.Bounds,
+        _ => default,
+    };
+
+    // ------------------------------------------------------------ text box editor
+
+    private void OpenTextEditor(TextBoxAnnotation annotation)
+    {
+        CloseActiveEditor(commit: true);
+
+        _editingAnnotation = annotation;
+        _activeEditor = new TextBox
+        {
+            Text = annotation.Text,
+            FontSize = annotation.FontSize,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.NoWrap,
+            MinWidth = 140,
+            Foreground = new SolidColorBrush(annotation.Color),
+        };
+        // Offset roughly compensates the TextBox's inner padding so the
+        // editor's text sits where the committed TextBlock will render.
+        SetLeft(_activeEditor, annotation.Position.X - 10);
+        SetTop(_activeEditor, annotation.Position.Y - 6);
+        _activeEditor.LostFocus += (_, _) => CloseActiveEditor(commit: true);
+
+        Rebuild(); // hides the static visual, re-adds the editor
+        _activeEditor.Focus(FocusState.Programmatic);
+        _activeEditor.SelectionStart = _activeEditor.Text.Length;
+    }
+
+    private void CloseActiveEditor(bool commit)
+    {
+        if (_activeEditor is null || _closingEditor)
+        {
+            return;
+        }
+
+        _closingEditor = true;
+        var editor = _activeEditor;
+        var annotation = _editingAnnotation;
+        _activeEditor = null;
+        _editingAnnotation = null;
+        Children.Remove(editor);
+
+        if (annotation is not null)
+        {
+            if (commit)
+            {
+                annotation.Text = editor.Text;
+            }
+
+            if (string.IsNullOrWhiteSpace(annotation.Text))
+            {
+                // An empty text box is pointless — treat as removed.
+                if (Page is not null && Page.Annotations.Remove(annotation))
+                {
+                    ToolState.Current.NotifyAnnotationRemoved(Page, annotation);
+                }
+                else
+                {
+                    Rebuild();
+                }
+            }
+            else
+            {
+                Rebuild();
+            }
+        }
+
+        _closingEditor = false;
+    }
+
+    // ------------------------------------------------------------ comment editor
+
+    private void OpenCommentEditor(CommentAnnotation annotation)
+    {
+        if (Page is null || !_visuals.TryGetValue(annotation, out var elements) || elements.Count == 0)
+        {
+            return;
+        }
+
+        var page = Page;
+        var box = new TextBox
+        {
+            Text = annotation.Text,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            Width = 260,
+            Height = 110,
+            PlaceholderText = "Write a comment…",
+        };
+
+        var deleteButton = new Button { Content = "Delete comment" };
+        var panel = new StackPanel { Spacing = 8 };
+        panel.Children.Add(box);
+        panel.Children.Add(deleteButton);
+
+        var flyout = new Flyout
+        {
+            Content = panel,
+            Placement = FlyoutPlacementMode.RightEdgeAlignedTop,
+        };
+
+        bool deleted = false;
+        deleteButton.Click += (_, _) =>
+        {
+            deleted = true;
+            if (page.Annotations.Remove(annotation))
+            {
+                ToolState.Current.NotifyAnnotationRemoved(page, annotation);
+            }
+
+            flyout.Hide();
+        };
+
+        flyout.Closed += (_, _) =>
+        {
+            if (!deleted)
+            {
+                annotation.Text = box.Text;
+            }
+        };
+
+        flyout.ShowAt(elements[0]);
+        box.Focus(FocusState.Programmatic);
+    }
+
+    // ------------------------------------------------------------ erase / cleanup
 
     private void EraseAt(Point pos)
     {
@@ -550,6 +1168,9 @@ public sealed class AnnotationCanvas : Canvas
         _pointerActive = false;
         _activeStroke = null;
         _activePoints = null;
+        _pressedObject = null;
+        _dragOriginals = null;
+        _resizingSignature = null;
     }
 
     private void CancelActiveInteraction()
@@ -560,9 +1181,20 @@ public sealed class AnnotationCanvas : Canvas
         }
 
         ClearPreview();
+        CloseActiveEditor(commit: true);
+
+        if (_pressedObject is not null || _resizingSignature is not null)
+        {
+            Rebuild(); // snap any half-dragged visuals back to their model state
+        }
+
         _pointerActive = false;
         _activeStroke = null;
         _activePoints = null;
+        _pressedObject = null;
+        _dragOriginals = null;
+        _resizingSignature = null;
+        _selectionAnchor = -1;
     }
 
     private Point Clamp(Point p) => new(

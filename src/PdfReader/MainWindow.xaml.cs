@@ -89,7 +89,7 @@ public sealed partial class MainWindow : Window
 
         _textService?.Dispose();
         _textService = new TextGeometryService(doc.SourceBytes);
-        ToolState.Current.WordProvider = index => _textService.GetWordRectsAsync(index);
+        ToolState.Current.WordProvider = index => _textService.GetWordsAsync(index);
 
         _undoStack.Clear();
         _isModified = false;
@@ -113,8 +113,12 @@ public sealed partial class MainWindow : Window
         ZoomOutButton.IsEnabled = true;
         FitWidthButton.IsEnabled = true;
         SelectToolButton.IsEnabled = true;
+        TextSelectToolButton.IsEnabled = true;
         DrawToolButton.IsEnabled = true;
         HighlightToolButton.IsEnabled = true;
+        TextToolButton.IsEnabled = true;
+        CommentToolButton.IsEnabled = true;
+        SignatureToolButton.IsEnabled = true;
         EraseToolButton.IsEnabled = true;
         ColorsButton.IsEnabled = true;
 
@@ -205,14 +209,26 @@ public sealed partial class MainWindow : Window
     private void SetTool(AnnotationTool tool)
     {
         ToolState.Current.Tool = tool;
+        if (tool != AnnotationTool.TextSelect)
+        {
+            ToolState.Current.ClearSelection();
+        }
+
         SelectToolButton.IsChecked = tool == AnnotationTool.None;
+        TextSelectToolButton.IsChecked = tool == AnnotationTool.TextSelect;
         DrawToolButton.IsChecked = tool == AnnotationTool.Draw;
         HighlightToolButton.IsChecked = tool == AnnotationTool.Highlight;
+        TextToolButton.IsChecked = tool == AnnotationTool.Text;
+        CommentToolButton.IsChecked = tool == AnnotationTool.Comment;
+        SignatureToolButton.IsChecked = tool == AnnotationTool.Signature;
         EraseToolButton.IsChecked = tool == AnnotationTool.Erase;
     }
 
     private void SelectToolButton_Click(object sender, RoutedEventArgs e) =>
         SetTool(AnnotationTool.None);
+
+    private void TextSelectToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(TextSelectToolButton.IsChecked == true ? AnnotationTool.TextSelect : AnnotationTool.None);
 
     private void DrawToolButton_Click(object sender, RoutedEventArgs e) =>
         SetTool(DrawToolButton.IsChecked == true ? AnnotationTool.Draw : AnnotationTool.None);
@@ -220,8 +236,91 @@ public sealed partial class MainWindow : Window
     private void HighlightToolButton_Click(object sender, RoutedEventArgs e) =>
         SetTool(HighlightToolButton.IsChecked == true ? AnnotationTool.Highlight : AnnotationTool.None);
 
+    private void TextToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(TextToolButton.IsChecked == true ? AnnotationTool.Text : AnnotationTool.None);
+
+    private void CommentToolButton_Click(object sender, RoutedEventArgs e) =>
+        SetTool(CommentToolButton.IsChecked == true ? AnnotationTool.Comment : AnnotationTool.None);
+
+    private async void SignatureToolButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SignatureToolButton.IsChecked != true)
+        {
+            SetTool(AnnotationTool.None);
+            return;
+        }
+
+        if (await EnsureSignatureAsync())
+        {
+            SetTool(AnnotationTool.Signature);
+        }
+        else
+        {
+            SetTool(AnnotationTool.None);
+        }
+    }
+
     private void EraseToolButton_Click(object sender, RoutedEventArgs e) =>
         SetTool(EraseToolButton.IsChecked == true ? AnnotationTool.Erase : AnnotationTool.None);
+
+    // ---------------------------------------------------------------- signature management
+
+    /// <summary>Makes sure a signature image is saved and decoded; prompts to import one if not.</summary>
+    private async Task<bool> EnsureSignatureAsync()
+    {
+        if (!SignatureStore.HasSignature && !await ImportSignatureAsync())
+        {
+            return false;
+        }
+
+        return await SignatureStore.GetBitmapAsync() is not null;
+    }
+
+    private async Task<bool> ImportSignatureAsync()
+    {
+        var picker = new FileOpenPicker();
+        picker.FileTypeFilter.Add(".png");
+        picker.FileTypeFilter.Add(".jpg");
+        picker.FileTypeFilter.Add(".jpeg");
+        picker.FileTypeFilter.Add(".bmp");
+        InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
+
+        var file = await picker.PickSingleFileAsync();
+        if (file is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            await SignatureStore.ImportAsync(file);
+            return true;
+        }
+        catch
+        {
+            await ShowErrorAsync(
+                "Couldn't import signature",
+                $"\"{file.Name}\" could not be read as an image.");
+            return false;
+        }
+    }
+
+    private async void ReplaceSignature_Click(object sender, RoutedEventArgs e)
+    {
+        if (await ImportSignatureAsync())
+        {
+            await SignatureStore.GetBitmapAsync();
+        }
+    }
+
+    private void RemoveSignature_Click(object sender, RoutedEventArgs e)
+    {
+        SignatureStore.Clear();
+        if (ToolState.Current.Tool == AnnotationTool.Signature)
+        {
+            SetTool(AnnotationTool.None);
+        }
+    }
 
     private static Windows.UI.Color ParseColor(string hex) => Windows.UI.Color.FromArgb(
         255,
@@ -250,6 +349,14 @@ public sealed partial class MainWindow : Window
         if (sender is FrameworkElement { Tag: string hex })
         {
             ToolState.Current.HighlightColor = ParseColor(hex);
+        }
+    }
+
+    private void TextSizeItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string size })
+        {
+            ToolState.Current.FontSize = double.Parse(size, CultureInfo.InvariantCulture);
         }
     }
 
@@ -574,6 +681,27 @@ public sealed partial class MainWindow : Window
     {
         args.Handled = true;
         Undo();
+    }
+
+    private void CopyAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        // Let TextBoxes (page box, text editors, comment editors) keep their
+        // native copy behavior.
+        if (FocusManager.GetFocusedElement(Root.XamlRoot) is TextBox)
+        {
+            return;
+        }
+
+        string text = ToolState.Current.SelectedText;
+        if (string.IsNullOrEmpty(text))
+        {
+            return;
+        }
+
+        args.Handled = true;
+        var package = new DataPackage();
+        package.SetText(text);
+        Clipboard.SetContent(package);
     }
 
     private void ZoomInAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)

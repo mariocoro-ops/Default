@@ -1,16 +1,20 @@
 using PdfReader.Models;
 using PdfReader.ViewModels;
 using PdfSharp.Drawing;
+using PdfSharp.Pdf;
+using PdfSharp.Pdf.Annotations;
 using PdfIO = PdfSharp.Pdf.IO;
 
 namespace PdfReader.Services;
 
 /// <summary>
 /// Writes the session's annotations into a copy of the PDF using PDFsharp.
-/// Marks are drawn into the page content (flattened) in append mode, so the
-/// result renders identically in every viewer. XGraphics.FromPdfPage uses a
-/// top-left origin in points, matching our stored geometry up to the 96→72
-/// unit conversion.
+/// Ink, highlights, text boxes, and signatures are drawn into the page
+/// content (flattened) in append mode, so they render identically in every
+/// viewer. Comments become real PDF text annotations, so they pop up as
+/// sticky notes in Acrobat, Edge, and friends. XGraphics.FromPdfPage uses a
+/// top-left origin, matching our stored geometry up to a linear scale that is
+/// derived from the actual page size (no unit assumptions).
 /// </summary>
 public static class PdfSaveService
 {
@@ -30,27 +34,40 @@ public static class PdfSaveService
             using var input = new MemoryStream(bytes, writable: false);
             using var pdf = PdfIO.PdfReader.Open(input, PdfIO.PdfDocumentOpenMode.Modify);
 
-            foreach (var (index, baseWidth, baseHeight, annotations) in pages)
+            XImage? signatureImage = null;
+            try
             {
-                var page = pdf.Pages[(int)index];
-
-                // Scale from overlay coordinates to this page's point size,
-                // derived from the actual page — no unit assumptions.
-                double sx = page.Width.Point / baseWidth;
-                double sy = page.Height.Point / baseHeight;
-
-                using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
-                foreach (var annotation in annotations)
+                foreach (var (index, baseWidth, baseHeight, annotations) in pages)
                 {
-                    Draw(gfx, annotation, sx, sy);
-                }
-            }
+                    var page = pdf.Pages[(int)index];
 
-            pdf.Save(targetPath);
+                    // Scale from overlay coordinates to this page's point size.
+                    double sx = page.Width.Point / baseWidth;
+                    double sy = page.Height.Point / baseHeight;
+
+                    using var gfx = XGraphics.FromPdfPage(page, XGraphicsPdfPageOptions.Append);
+                    foreach (var annotation in annotations)
+                    {
+                        Draw(gfx, page, annotation, sx, sy, ref signatureImage);
+                    }
+                }
+
+                pdf.Save(targetPath);
+            }
+            finally
+            {
+                signatureImage?.Dispose();
+            }
         });
     }
 
-    private static void Draw(XGraphics gfx, AnnotationBase annotation, double sx, double sy)
+    private static void Draw(
+        XGraphics gfx,
+        PdfPage page,
+        AnnotationBase annotation,
+        double sx,
+        double sy,
+        ref XImage? signatureImage)
     {
         switch (annotation)
         {
@@ -63,6 +80,58 @@ public static class PdfSaveService
                     gfx.DrawRectangle(brush, r.X * sx, r.Y * sy, r.Width * sx, r.Height * sy);
                 }
 
+                break;
+            }
+
+            case TextBoxAnnotation text when !string.IsNullOrWhiteSpace(text.Text):
+            {
+                var font = new XFont("Arial", text.FontSize * sy, XFontStyleEx.Regular);
+                var brush = new XSolidBrush(XColor.FromArgb(
+                    255, text.Color.R, text.Color.G, text.Color.B));
+
+                // Line height approximates the overlay TextBlock's spacing.
+                double lineHeight = text.FontSize * sy * 1.33;
+                string[] lines = text.Text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+                for (int i = 0; i < lines.Length; i++)
+                {
+                    gfx.DrawString(
+                        lines[i],
+                        font,
+                        brush,
+                        new XPoint(text.Position.X * sx, text.Position.Y * sy + i * lineHeight),
+                        XStringFormats.TopLeft);
+                }
+
+                break;
+            }
+
+            case CommentAnnotation comment:
+            {
+                // A real PDF sticky-note annotation — opens as a popup note in
+                // other viewers instead of being burned into the page.
+                var note = new PdfTextAnnotation
+                {
+                    Title = "Comment",
+                    Contents = comment.Text ?? string.Empty,
+                    Icon = PdfTextAnnotationIcon.Comment,
+                };
+                var world = new XRect(
+                    comment.Position.X * sx,
+                    comment.Position.Y * sy,
+                    CommentAnnotation.IconSize * sx,
+                    CommentAnnotation.IconSize * sx);
+                note.Rectangle = new PdfRectangle(gfx.Transformer.WorldToDefaultPage(world));
+                page.Annotations.Add(note);
+                break;
+            }
+
+            case SignatureAnnotation signature when File.Exists(SignatureStore.ImagePath):
+            {
+                signatureImage ??= XImage.FromFile(SignatureStore.ImagePath);
+                var b = signature.Bounds;
+                gfx.DrawImage(
+                    signatureImage,
+                    new XRect(b.X * sx, b.Y * sy, b.Width * sx, b.Height * sy));
                 break;
             }
 

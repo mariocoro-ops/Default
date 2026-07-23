@@ -3,15 +3,15 @@
 A clean, dark-themed PDF reader and annotator for **Windows 11**, built with
 **WinUI 3** (Windows App SDK) and free/open-source PDF libraries only.
 
-![status](https://img.shields.io/badge/phase-2%20markup-blue)
+![status](https://img.shields.io/badge/phase-3%20objects-blue)
 
 ## Feature roadmap
 
 | Phase | Features | Status |
 |---|---|---|
 | **1 — Viewer** | Open, render, scroll, zoom, fit-width, page navigation, print, drag & drop, `.pdf` file association, dark Mica UI | ✅ Done |
-| **2 — Markup** | Freehand pen drawing, text-aware highlighting, eraser, undo, save annotated copy (PDFsharp) | ✅ In this branch |
-| **3 — Objects** | Text boxes, sticky-note comments, pre-saved signature stamp from a scanned image | Planned |
+| **2 — Markup** | Freehand pen drawing, text-aware highlighting, eraser, undo, save annotated copy (PDFsharp) | ✅ Done |
+| **3 — Objects** | Text selection + copy, text boxes, sticky-note comments, pre-saved signature stamp from a scanned image | ✅ In this branch |
 | **4 — Ship** | MSIX installer polish, signing, distribution | Planned |
 
 ## Tech stack
@@ -63,6 +63,10 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
 | Print | `Ctrl+P` or the **Print** button |
 | Draw | Pen tool (pencil icon), then drag on a page; pick color/size under the palette icon |
 | Highlight | Highlighter tool (I-beam cursor), then drag across text like selecting in any reader — words are selected in reading order with a live preview; on scanned pages it keeps your rectangle |
+| Select & copy text | Text-select tool (copy icon), drag across text, then `Ctrl+C` |
+| Add text | Text tool (font icon), click a spot, type; click away to commit; click existing text to edit, drag to move; sizes under the palette icon |
+| Comment | Comment tool, click a spot, write the note; click an icon to reopen, drag to move. Saved as a real PDF sticky note |
+| Signature | Signature tool — first use asks for a scanned image (white background is made transparent automatically); then click to place, drag to move, drag the corner handle to resize. Manage the saved image under the palette icon |
 | Erase | Eraser tool, then click (or drag over) a mark |
 | Undo | `Ctrl+Z` or the undo button |
 | Back to scrolling | `Esc` or the select tool |
@@ -86,14 +90,22 @@ Start menu and registers as a `.pdf` handler you can choose in *Open with*.
   bitmap. Geometry is stored in zoom-independent page coordinates (DIPs at
   100%), so one dataset drives display at any zoom *and* the PDF output.
   (WinUI 3 has no `InkCanvas`, so the ink layer is custom pointer handling.)
-- On save, marks are drawn into the page content with PDFsharp in append mode
-  ("flattened"), which renders identically in every PDF viewer.
+- On save, ink, highlights, text boxes, and signatures are drawn into the page
+  content with PDFsharp in append mode ("flattened"), which renders
+  identically in every PDF viewer. Comments are written as real PDF text
+  annotations, so they open as sticky notes in other viewers.
+- The signature image lives in `%LocalAppData%\SlatePdf\signature.png`,
+  imported once and reused across documents and sessions.
 
-## Known limitations (as of Phase 2)
+## Known limitations (as of Phase 3)
 
 - Password-protected PDFs show an error instead of a password prompt.
-- Saved marks are flattened into the page, so they can't be selected or
-  deleted afterwards in other PDF editors (undo works while the app is open).
+- Saved marks (except comments) are flattened into the page, so they can't be
+  selected or deleted afterwards in other PDF editors (undo works while the
+  app is open).
+- Comment sticky notes may not be visible when the saved file is reopened in
+  Slate PDF itself (the Windows renderer skips annotations without embedded
+  appearances); Acrobat and Edge show them.
 - Pages with a `/Rotate` entry may place marks slightly off; standard
   documents are unaffected.
 - On touch screens, one-finger drag pans the document rather than drawing —

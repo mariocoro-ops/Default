@@ -1,3 +1,4 @@
+using PdfReader.Models;
 using Windows.Foundation;
 
 namespace PdfReader.Services;
@@ -16,7 +17,7 @@ public sealed class TextGeometryService : IDisposable
 {
     private readonly byte[] _bytes;
     private readonly object _sync = new();
-    private readonly Dictionary<uint, IReadOnlyList<Rect>> _cache = new();
+    private readonly Dictionary<uint, IReadOnlyList<WordBox>> _cache = new();
     private UglyToad.PdfPig.PdfDocument? _document;
     private bool _openFailed;
     private bool _disposed;
@@ -26,7 +27,7 @@ public sealed class TextGeometryService : IDisposable
         _bytes = bytes;
     }
 
-    public Task<IReadOnlyList<Rect>> GetWordRectsAsync(uint pageIndex)
+    public Task<IReadOnlyList<WordBox>> GetWordsAsync(uint pageIndex)
     {
         lock (_sync)
         {
@@ -36,7 +37,7 @@ public sealed class TextGeometryService : IDisposable
             }
         }
 
-        return Task.Run<IReadOnlyList<Rect>>(() =>
+        return Task.Run<IReadOnlyList<WordBox>>(() =>
         {
             lock (_sync)
             {
@@ -47,7 +48,7 @@ public sealed class TextGeometryService : IDisposable
 
                 if (_disposed || _openFailed)
                 {
-                    return Array.Empty<Rect>();
+                    return Array.Empty<WordBox>();
                 }
 
                 try
@@ -57,7 +58,7 @@ public sealed class TextGeometryService : IDisposable
                 catch
                 {
                     _openFailed = true;
-                    return Array.Empty<Rect>();
+                    return Array.Empty<WordBox>();
                 }
 
                 try
@@ -87,24 +88,26 @@ public sealed class TextGeometryService : IDisposable
                     }
 
                     double cropTop = cropBottom + cropHeight;
-                    var rects = new List<Rect>();
+                    var words = new List<WordBox>();
                     foreach (var word in page.GetWords())
                     {
                         var box = word.BoundingBox;
-                        rects.Add(new Rect(
-                            (box.Left - cropLeft) / cropWidth,
-                            (cropTop - box.Top) / cropHeight,
-                            Math.Max(0, box.Right - box.Left) / cropWidth,
-                            Math.Max(0, box.Top - box.Bottom) / cropHeight));
+                        words.Add(new WordBox(
+                            new Rect(
+                                (box.Left - cropLeft) / cropWidth,
+                                (cropTop - box.Top) / cropHeight,
+                                Math.Max(0, box.Right - box.Left) / cropWidth,
+                                Math.Max(0, box.Top - box.Bottom) / cropHeight),
+                            word.Text));
                     }
 
-                    IReadOnlyList<Rect> result = rects;
+                    IReadOnlyList<WordBox> result = words;
                     _cache[pageIndex] = result;
                     return result;
                 }
                 catch
                 {
-                    return Array.Empty<Rect>();
+                    return Array.Empty<WordBox>();
                 }
             }
         });

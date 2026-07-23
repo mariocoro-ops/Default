@@ -24,6 +24,7 @@
             <KeyboardAccelerator Modifiers="Control" Key="S" Invoked="SaveAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="P" Invoked="PrintAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Z" Invoked="UndoAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="C" Invoked="CopyAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Add" Invoked="ZoomInAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Subtract" Invoked="ZoomOutAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
@@ -81,6 +82,11 @@
                               ToolTipService.ToolTip="Select / scroll (Esc)">
                     <FontIcon Glyph="&#xE8B0;" FontSize="16" />
                 </ToggleButton>
+                <ToggleButton x:Name="TextSelectToolButton" Click="TextSelectToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Select text — Ctrl+C copies it">
+                    <FontIcon Glyph="&#xE8C8;" FontSize="16" />
+                </ToggleButton>
                 <ToggleButton x:Name="DrawToolButton" Click="DrawToolButton_Click" Padding="9"
                               IsEnabled="False"
                               ToolTipService.ToolTip="Draw with the pen">
@@ -90,6 +96,21 @@
                               IsEnabled="False"
                               ToolTipService.ToolTip="Highlight text (drag across text)">
                     <FontIcon Glyph="&#xE7E6;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="TextToolButton" Click="TextToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Add text (click a spot, type, click away)">
+                    <FontIcon Glyph="&#xE8D2;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="CommentToolButton" Click="CommentToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Add a comment note (click a spot)">
+                    <FontIcon Glyph="&#xE90A;" FontSize="16" />
+                </ToggleButton>
+                <ToggleButton x:Name="SignatureToolButton" Click="SignatureToolButton_Click" Padding="9"
+                              IsEnabled="False"
+                              ToolTipService.ToolTip="Place your signature (click a spot; drag corner to resize)">
+                    <FontIcon Glyph="&#xE76D;" FontSize="16" />
                 </ToggleButton>
                 <ToggleButton x:Name="EraseToolButton" Click="EraseToolButton_Click" Padding="9"
                               IsEnabled="False"
@@ -128,6 +149,17 @@
                                 <RadioMenuFlyoutItem Text="Pink" GroupName="hlColor" Tag="#F06292"
                                                      Click="HighlightColorItem_Click" />
                             </MenuFlyoutSubItem>
+                            <MenuFlyoutSubItem Text="Text size">
+                                <RadioMenuFlyoutItem Text="Small" GroupName="textSize" Tag="12"
+                                                     Click="TextSizeItem_Click" />
+                                <RadioMenuFlyoutItem Text="Medium" GroupName="textSize" Tag="16"
+                                                     IsChecked="True" Click="TextSizeItem_Click" />
+                                <RadioMenuFlyoutItem Text="Large" GroupName="textSize" Tag="22"
+                                                     Click="TextSizeItem_Click" />
+                            </MenuFlyoutSubItem>
+                            <MenuFlyoutSeparator />
+                            <MenuFlyoutItem Text="Replace signature image…" Click="ReplaceSignature_Click" />
+                            <MenuFlyoutItem Text="Remove saved signature" Click="RemoveSignature_Click" />
                         </MenuFlyout>
                     </DropDownButton.Flyout>
                 </DropDownButton>
