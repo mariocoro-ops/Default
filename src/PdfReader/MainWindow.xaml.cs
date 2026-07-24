@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Runtime.InteropServices;
 using Microsoft.UI;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Input;
@@ -59,53 +58,16 @@ public sealed partial class MainWindow : Window
     private bool _laserOn;
     private Point _lastPointerInRoot;
 
-    // ---- cursor hiding for the laser pointer -----------------------------
-    // WinUI re-applies a cursor on every pointer move, so ShowCursor is not
-    // enough. We subclass the window and swallow WM_SETCURSOR (hiding the
-    // cursor) while the laser is on, which the framework can't override.
-    private const int GWLP_WNDPROC = -4;
-    private const uint WM_SETCURSOR = 0x0020;
-    private const uint WM_MOUSEMOVE = 0x0200;
-    private const int HTCLIENT = 1;
-
-    private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    private delegate bool EnumChildProc(IntPtr hWnd, IntPtr lParam);
-
-    private WndProcDelegate? _wndProc; // kept alive for the native pointer
-    private IntPtr _wndProcPtr;
-    private readonly Dictionary<IntPtr, IntPtr> _originalProcs = new();
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SetCursor(IntPtr hCursor);
-
-    [DllImport("user32.dll", EntryPoint = "CallWindowProcW")]
-    private static extern IntPtr CallWindowProc(IntPtr prev, IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll", EntryPoint = "DefWindowProcW")]
-    private static extern IntPtr DefWindowProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-
-    [DllImport("user32.dll")]
-    private static extern bool EnumChildWindows(IntPtr hWnd, EnumChildProc callback, IntPtr lParam);
-
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr newLong);
-
-    [DllImport("user32.dll", EntryPoint = "SetWindowLongW")]
-    private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int newLong);
-
-    private static IntPtr SetWindowLongPtrCompat(IntPtr hWnd, int nIndex, IntPtr newLong) =>
-        IntPtr.Size == 8
-            ? SetWindowLongPtr64(hWnd, nIndex, newLong)
-            : new IntPtr(SetWindowLong32(hWnd, nIndex, newLong.ToInt32()));
-
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gotoTimer;
 
-    /// <summary>Vertical gap between pages. In presentation mode it's a full
-    /// screen so only one slide is ever visible.</summary>
-    private double PageGap => _presenting ? Math.Max(PageSpacing, Scroller.ViewportHeight) : PageSpacing;
+    /// <summary>
+    /// The spacing the layout is actually using right now. Geometry math must
+    /// read this (not recompute from the viewport) so page-top calculations
+    /// always match what's on screen, even mid-transition.
+    /// </summary>
+    private double LayoutSpacing => PagesLayout?.Spacing ?? PageSpacing;
 
     public MainWindow()
     {
@@ -158,66 +120,7 @@ public sealed partial class MainWindow : Window
 
         _defaultScrollerBackground = Scroller.Background;
 
-        InstallCursorHook();
         RegisterSlideNumberAccelerators();
-    }
-
-    private void InstallCursorHook()
-    {
-        _wndProc = LaserWndProc;
-        _wndProcPtr = Marshal.GetFunctionPointerForDelegate(_wndProc);
-        Subclass(WindowNative.GetWindowHandle(this));
-    }
-
-    /// <summary>
-    /// Subclasses the content-island child windows too. WinUI sets the cursor
-    /// from a child island window, not the top-level HWND, so hooking only the
-    /// top window wouldn't catch WM_SETCURSOR. Called lazily when the laser is
-    /// first switched on, by which point the islands exist.
-    /// </summary>
-    private void EnsureCursorHooks()
-    {
-        var top = WindowNative.GetWindowHandle(this);
-        EnumChildWindows(top, (child, _) =>
-        {
-            Subclass(child);
-            return true;
-        }, IntPtr.Zero);
-    }
-
-    private void Subclass(IntPtr hwnd)
-    {
-        if (hwnd == IntPtr.Zero || _originalProcs.ContainsKey(hwnd))
-        {
-            return;
-        }
-
-        _originalProcs[hwnd] = SetWindowLongPtrCompat(hwnd, GWLP_WNDPROC, _wndProcPtr);
-    }
-
-    private IntPtr LaserWndProc(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam)
-    {
-        // While the laser is on, hide the cursor over the client area — this
-        // runs before WinUI's own handler, so it can't re-show the cursor.
-        if (msg == WM_SETCURSOR && _laserOn && (lParam.ToInt64() & 0xFFFF) == HTCLIENT)
-        {
-            SetCursor(IntPtr.Zero);
-            return (IntPtr)1; // TRUE — handled
-        }
-
-        var result = _originalProcs.TryGetValue(hWnd, out var original) && original != IntPtr.Zero
-            ? CallWindowProc(original, hWnd, msg, wParam, lParam)
-            : DefWindowProc(hWnd, msg, wParam, lParam);
-
-        // WinUI's pointer pipeline also calls SetCursor directly while
-        // processing mouse moves (not just via WM_SETCURSOR). Re-null the
-        // cursor after its handler ran — last write wins until the next move.
-        if (msg == WM_MOUSEMOVE && _laserOn)
-        {
-            SetCursor(IntPtr.Zero);
-        }
-
-        return result;
     }
 
     /// <summary>
@@ -751,7 +654,7 @@ public sealed partial class MainWindow : Window
         double offset = ContentMargin;
         for (int i = 0; i < pageNumber - 1 && i < _doc!.Pages.Count; i++)
         {
-            offset += _doc.Pages[i].DisplayHeight + PageGap;
+            offset += _doc.Pages[i].DisplayHeight + LayoutSpacing;
         }
 
         return offset;
@@ -791,7 +694,7 @@ public sealed partial class MainWindow : Window
                 break;
             }
 
-            y += _doc.Pages[i].DisplayHeight + PageGap;
+            y += _doc.Pages[i].DisplayHeight + LayoutSpacing;
         }
 
         return page;
@@ -998,7 +901,9 @@ public sealed partial class MainWindow : Window
         SetZoom(zoom, keepAnchor: false);
         ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
 
-        PagesLayout.Spacing = PageGap; // isolate each slide by a full screen
+        // Isolate each slide by a full screen; from here on all geometry math
+        // reads this same value via LayoutSpacing, so they can't disagree.
+        PagesLayout.Spacing = Math.Max(PageSpacing, Scroller.ViewportHeight);
         Root.UpdateLayout();
         JumpToPage(_currentPage); // recenters via ScrollTargetFor
     }
@@ -1167,16 +1072,18 @@ public sealed partial class MainWindow : Window
         LaserPointer.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
         if (on)
         {
-            EnsureCursorHooks(); // islands exist by now; hook them for WM_SETCURSOR
-
-            // Place it at the cursor immediately rather than the corner, and
-            // hide the arrow now (the window hook keeps it hidden thereafter).
+            // Place it at the cursor immediately rather than the corner.
             LaserTransform.X = _lastPointerInRoot.X - LaserPointer.Width / 2;
             LaserTransform.Y = _lastPointerInRoot.Y - LaserPointer.Height / 2;
-            SetCursor(IntPtr.Zero);
         }
-        // Turning off: the next pointer move restores the cursor via the
-        // default window proc, so nothing to do here.
+
+        // Hide/restore the pointer through the XAML cursor system itself
+        // (assigning a disposed InputCursor hides it) — the per-element
+        // ProtectedCursor of the page overlay and the viewer both flip, so no
+        // element re-shows its own cursor. Win32 hooks can't win this fight:
+        // WinUI applies element cursors from its input pipeline.
+        ToolState.Current.LaserActive = on;
+        Scroller.SetCursorHidden(on);
     }
 
     private void Root_PointerMoved(object sender, PointerRoutedEventArgs e)

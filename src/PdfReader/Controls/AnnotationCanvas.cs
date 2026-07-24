@@ -172,6 +172,12 @@ public sealed class AnnotationCanvas : Canvas
 
     private void OnToolStateChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (e.PropertyName == nameof(ToolState.LaserActive))
+        {
+            UpdateInteractivity(); // swap the element cursor in/out of hidden
+            return;
+        }
+
         if (e.PropertyName == nameof(ToolState.Tool))
         {
             // Switching to the highlighter with a live text selection turns
@@ -218,18 +224,29 @@ public sealed class AnnotationCanvas : Canvas
         var tool = ToolState.Current.Tool;
         IsHitTestVisible = Page is not null && tool != AnnotationTool.None;
 
-        ProtectedCursor = tool switch
+        if (ToolState.Current.LaserActive)
         {
-            AnnotationTool.Hand => InputSystemCursor.Create(InputSystemCursorShape.Hand),
-            AnnotationTool.TextSelect => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
-            AnnotationTool.Highlight => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
-            AnnotationTool.Text => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
-            AnnotationTool.Draw => InputSystemCursor.Create(InputSystemCursorShape.Cross),
-            AnnotationTool.Comment => InputSystemCursor.Create(InputSystemCursorShape.Arrow),
-            AnnotationTool.Signature => InputSystemCursor.Create(InputSystemCursorShape.Arrow),
-            AnnotationTool.Erase => InputSystemCursor.Create(InputSystemCursorShape.Hand),
-            _ => null,
-        };
+            // Laser pointer mode: blank this element's cursor so only the
+            // glowing dot shows (a disposed InputCursor hides the pointer).
+            var blank = InputSystemCursor.Create(InputSystemCursorShape.Arrow);
+            blank.Dispose();
+            ProtectedCursor = blank;
+        }
+        else
+        {
+            ProtectedCursor = tool switch
+            {
+                AnnotationTool.Hand => InputSystemCursor.Create(InputSystemCursorShape.Hand),
+                AnnotationTool.TextSelect => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
+                AnnotationTool.Highlight => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
+                AnnotationTool.Text => InputSystemCursor.Create(InputSystemCursorShape.IBeam),
+                AnnotationTool.Draw => InputSystemCursor.Create(InputSystemCursorShape.Cross),
+                AnnotationTool.Comment => InputSystemCursor.Create(InputSystemCursorShape.Arrow),
+                AnnotationTool.Signature => InputSystemCursor.Create(InputSystemCursorShape.Arrow),
+                AnnotationTool.Erase => InputSystemCursor.Create(InputSystemCursorShape.Hand),
+                _ => null,
+            };
+        }
 
         if (tool is AnnotationTool.Highlight or AnnotationTool.TextSelect)
         {
@@ -561,16 +578,21 @@ public sealed class AnnotationCanvas : Canvas
             case StickyNoteAnnotation note:
             {
                 const double pad = 8;
+                const double borderWidth = 1.5;
+                // The card's inner content area loses padding AND border on
+                // both sides; measuring at the wrong width made the text
+                // re-wrap taller at arrange time, clipping the last line.
+                double contentWidth = note.Width - (pad + borderWidth) * 2;
                 var block = new TextBlock
                 {
                     Text = string.IsNullOrEmpty(note.Text) ? " " : note.Text,
                     FontSize = note.FontSize,
                     Foreground = new SolidColorBrush(note.Color),
                     TextWrapping = TextWrapping.Wrap,
-                    Width = note.Width - pad * 2,
+                    Width = contentWidth,
                 };
-                block.Measure(new Size(note.Width - pad * 2, double.PositiveInfinity));
-                double height = block.DesiredSize.Height + pad * 2;
+                block.Measure(new Size(contentWidth, double.PositiveInfinity));
+                double height = block.DesiredSize.Height + (pad + borderWidth) * 2 + 2; // +2 slack
                 note.RenderSize = new Size(note.Width, height);
 
                 var card = new Border
@@ -579,7 +601,7 @@ public sealed class AnnotationCanvas : Canvas
                     Height = height,
                     Background = new SolidColorBrush(Color.FromArgb(255, 0xFF, 0xE0, 0x2B)), // post-it yellow
                     BorderBrush = new SolidColorBrush(Colors.Black),
-                    BorderThickness = new Thickness(1.5),
+                    BorderThickness = new Thickness(borderWidth),
                     Padding = new Thickness(pad),
                     Child = block,
                 };

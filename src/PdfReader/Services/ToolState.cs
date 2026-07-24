@@ -55,6 +55,27 @@ public sealed class ToolState : INotifyPropertyChanged
         }
     }
 
+    private bool _laserActive;
+
+    /// <summary>
+    /// True while the presentation laser pointer is on; the page overlays
+    /// blank their element cursors so only the laser dot is visible.
+    /// </summary>
+    public bool LaserActive
+    {
+        get => _laserActive;
+        set
+        {
+            if (_laserActive == value)
+            {
+                return;
+            }
+
+            _laserActive = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(LaserActive)));
+        }
+    }
+
     public Color PenColor { get; set; } = Color.FromArgb(255, 0xE5, 0x39, 0x35);
 
     public double PenThickness { get; set; } = 3.0;

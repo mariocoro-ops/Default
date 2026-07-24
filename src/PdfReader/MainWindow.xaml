@@ -44,7 +44,7 @@
              the chrome height) keeps content below the toolbar in normal mode,
              and drops to zero in presentation mode. -->
         <Grid x:Name="DocumentHost" Margin="0,88,0,0">
-            <ScrollViewer x:Name="Scroller"
+            <controls:CursorScrollViewer x:Name="Scroller"
                           Background="{ThemeResource LayerFillColorDefaultBrush}"
                           HorizontalScrollBarVisibility="Auto"
                           HorizontalScrollMode="Enabled"
@@ -83,7 +83,7 @@
                         </DataTemplate>
                     </ItemsRepeater.ItemTemplate>
                 </ItemsRepeater>
-            </ScrollViewer>
+            </controls:CursorScrollViewer>
 
             <!-- Empty state -->
             <StackPanel x:Name="EmptyState" Spacing="12"
