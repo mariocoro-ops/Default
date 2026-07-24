@@ -65,6 +65,12 @@ public sealed partial class MainWindow : Window
     private int _settleTicks;
     private int _settleStableTicks;
 
+    // The slide to restore after leaving presentation (-1 = not exiting). While
+    // set, fit-width's relative-position anchoring is suppressed: during the
+    // transition we have a more specific intent than "keep roughly the same
+    // scroll spot" — namely "put this slide back at the top".
+    private int _exitTargetPage = -1;
+
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gotoTimer;
@@ -989,6 +995,18 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // Leaving presentation: the intent is "restore THIS slide", which is
+        // more specific than preserving a relative scroll spot measured from
+        // transitional geometry. Anchor on the exit target instead.
+        if (_exitTargetPage > 0)
+        {
+            SetZoom(zoom, keepAnchor: false);
+            ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
+            Root.UpdateLayout();
+            JumpToPage(_exitTargetPage);
+            return;
+        }
+
         // Re-zooming rescales every page height while the scroll offset stays
         // numerically the same — silently relocating the view to a different
         // page. Capture where the viewport sits within the anchor page first
@@ -1093,6 +1111,10 @@ public sealed partial class MainWindow : Window
         else if (_fitWidthMode)
         {
             ApplyFitWidth();
+            if (_exitTargetPage > 0)
+            {
+                StartPresentationSettle(); // keep verifying through the resize
+            }
         }
     }
 
@@ -1130,6 +1152,8 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
+
+        _exitTargetPage = -1; // cancel any in-flight exit restoration
 
         // Lock in the slide to present BEFORE any geometry changes: the one
         // actually filling most of the screen, measured — not a point probe,
@@ -1192,9 +1216,15 @@ public sealed partial class MainWindow : Window
 
     private void SettleTick()
     {
-        if (!_presenting || _doc is null || _doc.Pages.Count == 0)
+        if (_doc is null || _doc.Pages.Count == 0 || (!_presenting && _exitTargetPage < 0))
         {
             _settleTimer?.Stop();
+            return;
+        }
+
+        if (!_presenting)
+        {
+            SettleExitTick();
             return;
         }
 
@@ -1243,6 +1273,67 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Exit counterpart: once the viewport agrees with the restored windowed
+    /// size, re-fit to width and put the presented slide back at the top.
+    /// </summary>
+    private void SettleExitTick()
+    {
+        bool stable = false;
+        double vw = Scroller.ViewportWidth, vh = Scroller.ViewportHeight;
+
+        if (vw > 0 && vh > 0)
+        {
+            double scale = Root.XamlRoot?.RasterizationScale ?? 1.0;
+            double windowWidth = AppWindow.ClientSize.Width / scale;
+            double windowHeight = AppWindow.ClientSize.Height / scale;
+
+            // The document host sits below the chrome, so the viewport is
+            // shorter than the window by that much.
+            double expectedHeight = windowHeight - ChromeHost.ActualHeight;
+            bool viewportMatchesWindow =
+                windowWidth <= 0 || windowHeight <= 0 ||
+                (Math.Abs(vw - windowWidth) <= 2 && Math.Abs(vh - expectedHeight) <= 3);
+
+            if (viewportMatchesWindow)
+            {
+                double pw = _doc!.Pages.Max(p => p.BaseWidth);
+                double wantedZoom = Math.Clamp(
+                    (vw - ContentMargin * 2) / pw, MinZoom, MaxZoom);
+                if (Math.Abs(wantedZoom - _doc.Zoom) >= 0.001)
+                {
+                    ApplyFitWidth();
+                }
+                else if (MeasuredPageOffsetError(_exitTargetPage) is double error)
+                {
+                    if (Math.Abs(error) <= 1)
+                    {
+                        stable = true;
+                    }
+                    else
+                    {
+                        double target = Math.Clamp(
+                            Scroller.VerticalOffset + error, 0, Scroller.ScrollableHeight);
+                        stable = Math.Abs(target - Scroller.VerticalOffset) <= 0.5;
+                        if (!stable)
+                        {
+                            Scroller.ChangeView(null, target, null, disableAnimation: true);
+                        }
+                    }
+                }
+            }
+        }
+
+        _settleTicks++;
+        _settleStableTicks = stable ? _settleStableTicks + 1 : 0;
+
+        if ((_settleStableTicks >= 3 && _settleTicks >= 10) || _settleTicks > 50)
+        {
+            _settleTimer?.Stop();
+            _exitTargetPage = -1; // release the anchoring suppression
+        }
+    }
+
     private void ExitPresentation()
     {
         if (!_presenting)
@@ -1253,6 +1344,12 @@ public sealed partial class MainWindow : Window
         SetLaser(false); // restore the OS cursor before leaving full screen
         _settleTimer?.Stop();
         _presenting = false;
+
+        // Remember the slide being presented; the windowed resize lands
+        // asynchronously, and without this the late fit-width pass would
+        // re-anchor on whatever transitional geometry it happened to find.
+        _exitTargetPage = _currentPage;
+
         AppWindow.SetPresenter(AppWindowPresenterKind.Overlapped);
 
         ChromeBackground.Background = new SolidColorBrush(Colors.Transparent);
@@ -1267,6 +1364,10 @@ public sealed partial class MainWindow : Window
         ApplyFitWidth();
         JumpToPage(_currentPage);
         Scroller.Focus(FocusState.Programmatic);
+
+        // Verify-and-correct until the windowed size has actually landed —
+        // the mirror of the entry-side settle loop.
+        StartPresentationSettle();
     }
 
     /// <summary>Slides the chrome (title bar + toolbar) in or out of view.</summary>
