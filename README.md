@@ -94,7 +94,7 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 | Open a PDF | `Ctrl+O`, the **Open** button, or drag & drop a file onto the window |
 | Navigate | Scroll, or `Page Down`/`Page Up` to advance one slide at a time; `Home`/`End` for the first/last page; the arrows / page box in the toolbar |
 | Go to slide | Just type the slide number and press `Enter` (works anywhere, like PowerPoint) — `Backspace` edits, `Esc` cancels |
-| Present | `F5` or the present button — full-screen one-slide-at-a-time view (locked to whole slides) with the toolbar hidden; move the cursor to the top edge to reveal it. Arrows / `Space` / mouse wheel / `Page Down`·`Up` change slides. `Esc` returns to the hand tool, then exits full screen |
+| Present | `F5` or the present button — full-screen one-slide-at-a-time view (locked to whole slides) with the toolbar hidden; move the cursor to the top edge to reveal it. Arrows / `Space` / mouse wheel / `Page Down`·`Up` change slides. `L` toggles a laser pointer. `Esc` returns to the hand tool, then exits full screen |
 | Pan | The hand tool is the default: grab and drag the page to move it around (`H` toggles it; `Esc` returns to it) |
 | Follow links | In select or hand mode, click a link in the PDF — internal links jump to the target page; external links open in the browser after a confirmation. With the hand tool, a click follows the link and a drag still pans |
 | Zoom | `Ctrl` + `+`/`-`, `Ctrl` + mouse wheel (zooms toward the cursor), or the toolbar buttons |

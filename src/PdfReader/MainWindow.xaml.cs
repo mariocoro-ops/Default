@@ -54,6 +54,11 @@ public sealed partial class MainWindow : Window
     private bool _chromeShown = true;
     private Brush? _defaultScrollerBackground;
     private Storyboard? _chromeAnim;
+    private bool _laserOn;
+    private Point _lastPointerInRoot;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern int ShowCursor(bool bShow);
 
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
@@ -955,6 +960,7 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        SetLaser(false); // restore the OS cursor before leaving full screen
         _presenting = false;
         AppWindow.SetPresenter(AppWindowPresenterKind.Overlapped);
 
@@ -1012,6 +1018,29 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void ToggleLaser() => SetLaser(!_laserOn);
+
+    private void SetLaser(bool on)
+    {
+        if (on == _laserOn)
+        {
+            return;
+        }
+
+        _laserOn = on;
+        LaserPointer.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        if (on)
+        {
+            // Place it at the cursor immediately rather than the corner.
+            LaserTransform.X = _lastPointerInRoot.X - LaserPointer.Width / 2;
+            LaserTransform.Y = _lastPointerInRoot.Y - LaserPointer.Height / 2;
+        }
+
+        // Hide the OS arrow while the laser is on so only the dot shows. The
+        // ShowCursor counter is kept balanced by the on==_laserOn guard above.
+        ShowCursor(!on);
+    }
+
     private void Root_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
         if (!_presenting)
@@ -1019,7 +1048,16 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        double y = e.GetCurrentPoint(Root).Position.Y;
+        var pos = e.GetCurrentPoint(Root).Position;
+        _lastPointerInRoot = pos;
+
+        if (_laserOn)
+        {
+            LaserTransform.X = pos.X - LaserPointer.Width / 2;
+            LaserTransform.Y = pos.Y - LaserPointer.Height / 2;
+        }
+
+        double y = pos.Y;
 
         // Hysteresis: a generous band reveals the chrome, and it stays until the
         // cursor drops well below it — so it doesn't flicker at the boundary.
@@ -1240,6 +1278,10 @@ public sealed partial class MainWindow : Window
                 break;
             case VirtualKey.Left or VirtualKey.Up when _presenting:
                 JumpToPage(_currentPage - 1, animate: true);
+                break;
+
+            case VirtualKey.L when _presenting:
+                ToggleLaser();
                 break;
 
             default:

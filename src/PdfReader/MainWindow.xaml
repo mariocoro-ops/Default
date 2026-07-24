@@ -334,5 +334,38 @@
                 </StackPanel>
             </Grid>
         </Grid>
+
+        <!-- Laser pointer overlay: a glowing red dot that follows the cursor
+             while presenting (toggled with L). Non-interactive and topmost. -->
+        <Grid x:Name="LaserPointer"
+              Width="46" Height="46"
+              Visibility="Collapsed"
+              IsHitTestVisible="False"
+              HorizontalAlignment="Left"
+              VerticalAlignment="Top">
+            <Grid.RenderTransform>
+                <TranslateTransform x:Name="LaserTransform" />
+            </Grid.RenderTransform>
+            <!-- Soft outer glow -->
+            <Ellipse Width="46" Height="46">
+                <Ellipse.Fill>
+                    <RadialGradientBrush>
+                        <GradientStop Color="#E6FF2D2D" Offset="0.0" />
+                        <GradientStop Color="#80FF2D2D" Offset="0.35" />
+                        <GradientStop Color="#00FF2D2D" Offset="1.0" />
+                    </RadialGradientBrush>
+                </Ellipse.Fill>
+            </Ellipse>
+            <!-- Bright white-hot core -->
+            <Ellipse Width="14" Height="14"
+                     HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Ellipse.Fill>
+                    <RadialGradientBrush>
+                        <GradientStop Color="#FFFFFFFF" Offset="0.0" />
+                        <GradientStop Color="#FFFF4D4D" Offset="1.0" />
+                    </RadialGradientBrush>
+                </Ellipse.Fill>
+            </Ellipse>
+        </Grid>
     </Grid>
 </Window>
