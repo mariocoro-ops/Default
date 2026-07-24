@@ -398,7 +398,6 @@ public sealed class LinkService : IDisposable
     {
         PdfReal r => r.Value,
         PdfInteger i => i.Value,
-        PdfUInteger u => u.Value,
         _ => null,
     };
 

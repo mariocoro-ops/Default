@@ -1354,7 +1354,6 @@ public sealed class AnnotationCanvas : Canvas
         // Focus one tick later — focusing while the pointer interaction is
         // still settling doesn't stick, and the resulting LostFocus would
         // immediately commit-and-delete the empty box.
-        var editor = _activeEditor;
         DispatcherQueue.TryEnqueue(() =>
         {
             if (ReferenceEquals(_activeEditor, editor))
