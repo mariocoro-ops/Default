@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Windowing;
 using PdfReader.Models;
 using PdfReader.Services;
@@ -52,6 +53,7 @@ public sealed partial class MainWindow : Window
     private bool _presenting;
     private bool _chromeShown = true;
     private Brush? _defaultScrollerBackground;
+    private Storyboard? _chromeAnim;
 
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
@@ -576,6 +578,21 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // While presenting, any stray scroll (e.g. a touchpad nudge) snaps back
+        // to the nearest whole slide so a partial slide is never left on screen.
+        if (_presenting)
+        {
+            int nearest = NearestPresentationPage();
+            _currentPage = nearest;
+            PageBox.Text = nearest.ToString();
+            if (Math.Abs(ScrollTargetFor(nearest) - Scroller.VerticalOffset) > 1)
+            {
+                JumpToPage(nearest);
+            }
+
+            return;
+        }
+
         // Manual scroll: the current page is the one whose top the viewport has
         // reached — computed straight from the offset, so it never drifts.
         int page = TopPageAt(Scroller.VerticalOffset);
@@ -587,6 +604,29 @@ public sealed partial class MainWindow : Window
                 PageBox.Text = page.ToString();
             }
         }
+    }
+
+    /// <summary>The slide whose centered target is closest to the current offset.</summary>
+    private int NearestPresentationPage()
+    {
+        if (_doc is null || _doc.Pages.Count == 0)
+        {
+            return 1;
+        }
+
+        int best = 1;
+        double bestDistance = double.MaxValue;
+        for (int p = 1; p <= _doc.Pages.Count; p++)
+        {
+            double distance = Math.Abs(ScrollTargetFor(p) - Scroller.VerticalOffset);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = p;
+            }
+        }
+
+        return best;
     }
 
     /// <summary>Scroll offset of the top of a 1-based page.</summary>
@@ -893,7 +933,12 @@ public sealed partial class MainWindow : Window
         DocumentHost.Margin = new Thickness(0);
         Scroller.Background = new SolidColorBrush(Colors.Black);
         ChromeBackground.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xF0, 0x1C, 0x1C, 0x1C));
-        SetChromeShown(false);
+
+        // Lock the view to whole slides: no scrollbars, no free scrolling.
+        // Navigation is via keys/wheel, which re-center exactly on each slide.
+        Scroller.VerticalScrollBarVisibility = ScrollBarVisibility.Hidden;
+        Scroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden;
+        SetChromeShown(false, animate: false);
 
         // One slide, fit to screen, centered — hand tool so a click still pans
         // or follows links but nothing gets drawn by accident.
@@ -915,7 +960,9 @@ public sealed partial class MainWindow : Window
 
         ChromeBackground.Background = new SolidColorBrush(Colors.Transparent);
         Scroller.Background = _defaultScrollerBackground;
-        SetChromeShown(true);
+        Scroller.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+        Scroller.HorizontalScrollBarVisibility = ScrollBarVisibility.Auto;
+        SetChromeShown(true, animate: false);
         DocumentHost.Margin = new Thickness(0, ChromeHost.ActualHeight, 0, 0);
 
         PagesLayout.Spacing = PageSpacing;
@@ -927,10 +974,30 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>Slides the chrome (title bar + toolbar) in or out of view.</summary>
-    private void SetChromeShown(bool shown)
+    private void SetChromeShown(bool shown, bool animate = true)
     {
         _chromeShown = shown;
-        ChromeTransform.Y = shown ? 0 : -Math.Max(1, ChromeHost.ActualHeight);
+        double target = shown ? 0 : -Math.Max(1, ChromeHost.ActualHeight);
+
+        _chromeAnim?.Stop();
+        if (!animate)
+        {
+            ChromeTransform.Y = target;
+            return;
+        }
+
+        var animation = new DoubleAnimation
+        {
+            To = target,
+            Duration = TimeSpan.FromMilliseconds(160),
+            EnableDependentAnimation = true,
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+        };
+        Storyboard.SetTarget(animation, ChromeTransform);
+        Storyboard.SetTargetProperty(animation, "Y");
+        _chromeAnim = new Storyboard();
+        _chromeAnim.Children.Add(animation);
+        _chromeAnim.Begin();
     }
 
     private void ChromeHost_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -941,7 +1008,7 @@ public sealed partial class MainWindow : Window
         }
         else if (!_chromeShown)
         {
-            ChromeTransform.Y = -Math.Max(1, ChromeHost.ActualHeight);
+            SetChromeShown(false, animate: false);
         }
     }
 
@@ -953,9 +1020,12 @@ public sealed partial class MainWindow : Window
         }
 
         double y = e.GetCurrentPoint(Root).Position.Y;
-        // Reveal when the cursor hugs the top edge; keep shown while it stays
-        // within the revealed chrome so you can reach the buttons.
-        bool show = y <= 6 || (_chromeShown && y <= ChromeHost.ActualHeight);
+
+        // Hysteresis: a generous band reveals the chrome, and it stays until the
+        // cursor drops well below it — so it doesn't flicker at the boundary.
+        const double revealBand = 48;
+        double keepBand = ChromeHost.ActualHeight + 40;
+        bool show = _chromeShown ? y <= keepBand : y <= revealBand;
         if (show != _chromeShown)
         {
             SetChromeShown(show);
@@ -964,16 +1034,33 @@ public sealed partial class MainWindow : Window
 
     private void Scroller_PointerWheelChanged(object sender, PointerRoutedEventArgs e)
     {
-        bool ctrlDown = InputKeyboardSource
-            .GetKeyStateForCurrentThread(VirtualKey.Control)
-            .HasFlag(CoreVirtualKeyStates.Down);
-        if (!ctrlDown || _doc is null)
+        if (_doc is null)
         {
             return;
         }
 
         var point = e.GetCurrentPoint(Scroller);
-        StepZoom(point.Properties.MouseWheelDelta > 0 ? +1 : -1, point.Position);
+        int delta = point.Properties.MouseWheelDelta;
+
+        bool ctrlDown = InputKeyboardSource
+            .GetKeyStateForCurrentThread(VirtualKey.Control)
+            .HasFlag(CoreVirtualKeyStates.Down);
+
+        // While presenting, the wheel advances slides instead of scrolling
+        // (which would reveal the gap between slides).
+        if (_presenting && !ctrlDown)
+        {
+            JumpToPage(_currentPage + (delta < 0 ? 1 : -1), animate: true);
+            e.Handled = true;
+            return;
+        }
+
+        if (!ctrlDown)
+        {
+            return;
+        }
+
+        StepZoom(delta > 0 ? +1 : -1, point.Position);
         e.Handled = true;
     }
 
@@ -1145,6 +1232,16 @@ public sealed partial class MainWindow : Window
             case VirtualKey.End:
                 JumpToPage(_doc.Pages.Count, animate: true);
                 break;
+
+            // While presenting, arrows and Space advance/retreat slides (and
+            // preempt the scroll viewer's own arrow-key nudge).
+            case VirtualKey.Right or VirtualKey.Down or VirtualKey.Space when _presenting:
+                JumpToPage(_currentPage + 1, animate: true);
+                break;
+            case VirtualKey.Left or VirtualKey.Up when _presenting:
+                JumpToPage(_currentPage - 1, animate: true);
+                break;
+
             default:
                 return;
         }
