@@ -616,7 +616,9 @@ public sealed partial class MainWindow : Window
         else
         {
             _commandedPage = -1;
-            page = TopPageAt(Scroller.VerticalOffset);
+            // Measured first (ground truth); arithmetic only as a fallback
+            // before any page has been realized.
+            page = DominantVisiblePage() ?? TopPageAt(Scroller.VerticalOffset);
         }
 
         if (page != _currentPage)
@@ -627,6 +629,60 @@ public sealed partial class MainWindow : Window
                 PageBox.Text = page.ToString();
             }
         }
+    }
+
+    /// <summary>
+    /// The page occupying the most of the viewport right now, measured from the
+    /// realized elements (earliest wins a tie). Null when nothing is realized.
+    ///
+    /// This is "the slide you're looking at" — the probe that matters when a
+    /// short window shows two or three slides at once. Sampling a single point
+    /// such as the viewport centre picked whichever slide happened to straddle
+    /// it, which in a small window could be a slide or two past the one you
+    /// considered current.
+    /// </summary>
+    private int? DominantVisiblePage()
+    {
+        if (_doc is null || _doc.Pages.Count == 0)
+        {
+            return null;
+        }
+
+        double viewportHeight = Scroller.ViewportHeight;
+        if (viewportHeight <= 0)
+        {
+            return null;
+        }
+
+        int best = -1;
+        double bestVisible = 0;
+        for (int i = 0; i < _doc.Pages.Count; i++)
+        {
+            if (PagesRepeater.TryGetElement(i) is not FrameworkElement element ||
+                element.ActualHeight <= 0)
+            {
+                continue; // not realized — can't be on screen
+            }
+
+            double top;
+            try
+            {
+                top = element.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
+            }
+            catch
+            {
+                continue;
+            }
+
+            double visible = Math.Min(top + element.ActualHeight, viewportHeight) - Math.Max(top, 0);
+            if (visible > bestVisible + 0.5)
+            {
+                bestVisible = visible;
+                best = i + 1;
+            }
+        }
+
+        return best > 0 ? best : null;
     }
 
     /// <summary>
@@ -935,18 +991,54 @@ public sealed partial class MainWindow : Window
 
         // Re-zooming rescales every page height while the scroll offset stays
         // numerically the same — silently relocating the view to a different
-        // page. Capture the page (and position within it) first, and restore
-        // it after the reflow, so window resizes keep you where you were.
-        int anchorPage = TopPageAt(Scroller.VerticalOffset);
+        // page. Capture where the viewport sits within the anchor page first
+        // (measured), then restore that same relative spot after the reflow,
+        // so window resizes keep you where you were.
+        int anchorPage = DominantVisiblePage() ?? TopPageAt(Scroller.VerticalOffset);
+        double? fractionInPage = null;
+        if (PagesRepeater.TryGetElement(anchorPage - 1) is FrameworkElement before &&
+            before.ActualHeight > 0)
+        {
+            try
+            {
+                double y = before.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
+                fractionInPage = Math.Clamp(-y / before.ActualHeight, -0.5, 1.5);
+            }
+            catch
+            {
+                // fall through to the arithmetic path below
+            }
+        }
+
         double heightBefore = Math.Max(1, _doc.Pages[anchorPage - 1].DisplayHeight);
-        double fraction = Math.Clamp(
+        fractionInPage ??= Math.Clamp(
             (Scroller.VerticalOffset - PageTop(anchorPage)) / heightBefore, -0.5, 1.5);
 
         SetZoom(zoom, keepAnchor: false);
         ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
-
         Root.UpdateLayout();
-        double target = PageTop(anchorPage) + fraction * _doc.Pages[anchorPage - 1].DisplayHeight;
+
+        if (PagesRepeater.TryGetElement(anchorPage - 1) is FrameworkElement after &&
+            after.ActualHeight > 0)
+        {
+            try
+            {
+                double y = after.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
+                double delta = y + fractionInPage.Value * after.ActualHeight;
+                Scroller.ChangeView(
+                    null,
+                    Math.Max(0, Scroller.VerticalOffset + delta),
+                    null,
+                    disableAnimation: true);
+                return;
+            }
+            catch
+            {
+                // fall through to the arithmetic path below
+            }
+        }
+
+        double target = PageTop(anchorPage) + fractionInPage.Value * _doc.Pages[anchorPage - 1].DisplayHeight;
         Scroller.ChangeView(null, Math.Max(0, target), null, disableAnimation: true);
     }
 
@@ -1039,10 +1131,10 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // Lock in the slide to present BEFORE any geometry changes, judged by
-        // what dominates the viewport (its center), not the top edge — so
-        // being "between slides" picks the one you're actually looking at.
-        _currentPage = TopPageAt(Scroller.VerticalOffset + Scroller.ViewportHeight / 2);
+        // Lock in the slide to present BEFORE any geometry changes: the one
+        // actually filling most of the screen, measured — not a point probe,
+        // which in a short window picked a slide or two further down.
+        _currentPage = DominantVisiblePage() ?? _currentPage;
         PageBox.Text = _currentPage.ToString();
 
         _presenting = true;
