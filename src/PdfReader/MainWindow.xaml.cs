@@ -883,13 +883,15 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // Fit the whole slide; since it then fills the viewport's height, the
+        // neighbouring slides sit off-screen with ordinary spacing. (An
+        // earlier version stretched the spacing to a full viewport to isolate
+        // slides — that made the scroll extent swing wildly across the async
+        // full-screen resize and stranded the view inside the giant gap.)
         double zoom = Math.Min((vw - 24) / pw, (vh - 24) / ph);
         SetZoom(zoom, keepAnchor: false);
         ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
 
-        // Isolate each slide by a full screen; from here on all geometry math
-        // reads this same value via LayoutSpacing, so they can't disagree.
-        PagesLayout.Spacing = Math.Max(PageSpacing, Scroller.ViewportHeight);
         Root.UpdateLayout();
         JumpToPage(_currentPage); // recenters via ScrollTargetFor
     }
@@ -1024,12 +1026,10 @@ public sealed partial class MainWindow : Window
         {
             double wantedZoom = Math.Clamp(
                 Math.Min((vw - 24) / pw, (vh - 24) / ph), MinZoom, MaxZoom);
-            double wantedSpacing = Math.Max(PageSpacing, vh);
             double target = Math.Clamp(
                 ScrollTargetFor(_currentPage), 0, Scroller.ScrollableHeight);
 
             stable = Math.Abs(wantedZoom - _doc.Zoom) < 0.001 &&
-                     Math.Abs(wantedSpacing - LayoutSpacing) < 0.5 &&
                      Math.Abs(target - Scroller.VerticalOffset) <= 1;
             if (!stable)
             {
@@ -1063,7 +1063,6 @@ public sealed partial class MainWindow : Window
         SetChromeShown(true, animate: false);
         DocumentHost.Margin = new Thickness(0, ChromeHost.ActualHeight, 0, 0);
 
-        PagesLayout.Spacing = PageSpacing;
         _fitWidthMode = true;
         Root.UpdateLayout();
         ApplyFitWidth();
