@@ -131,6 +131,13 @@ public sealed partial class MainWindow : Window
             new PointerEventHandler(Root_PointerMoved),
             handledEventsToo: true);
 
+        // Any press (scrollbar drag, hand-tool pan) hands control to the user
+        // and cancels a pending post-presentation restoration.
+        Root.AddHandler(
+            UIElement.PointerPressedEvent,
+            new PointerEventHandler((_, _) => EndExitRestore()),
+            handledEventsToo: true);
+
         _defaultScrollerBackground = Scroller.Background;
 
         RegisterSlideNumberAccelerators();
@@ -1111,9 +1118,11 @@ public sealed partial class MainWindow : Window
         else if (_fitWidthMode)
         {
             ApplyFitWidth();
-            if (_exitTargetPage > 0)
+            if (_exitTargetPage > 0 && _settleTimer?.IsRunning != true)
             {
-                StartPresentationSettle(); // keep verifying through the resize
+                // Resume verifying, but don't hand out a fresh budget on every
+                // resize event — that used to prolong the restoration.
+                _settleTimer?.Start();
             }
         }
     }
@@ -1324,13 +1333,31 @@ public sealed partial class MainWindow : Window
             }
         }
 
-        _settleTicks++;
-        _settleStableTicks = stable ? _settleStableTicks + 1 : 0;
+        // Stop the moment the slide is actually placed — no minimum duration.
+        // Lingering is what let this loop collide with the user's scrolling.
+        if (stable || ++_settleTicks > 50)
+        {
+            EndExitRestore();
+        }
+    }
 
-        if ((_settleStableTicks >= 3 && _settleTicks >= 10) || _settleTicks > 50)
+    /// <summary>
+    /// Ends the post-presentation restoration: stops the loop and releases the
+    /// anchoring suppression. Called when the slide is restored, when the
+    /// attempt times out, or as soon as the user scrolls — user input always
+    /// wins over the restoration.
+    /// </summary>
+    private void EndExitRestore()
+    {
+        if (_exitTargetPage < 0)
+        {
+            return;
+        }
+
+        _exitTargetPage = -1;
+        if (!_presenting)
         {
             _settleTimer?.Stop();
-            _exitTargetPage = -1; // release the anchoring suppression
         }
     }
 
@@ -1471,6 +1498,8 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
+
+        EndExitRestore(); // the user is driving now
 
         var point = e.GetCurrentPoint(Scroller);
         int delta = point.Properties.MouseWheelDelta;
@@ -1664,6 +1693,8 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
+
+        EndExitRestore(); // any navigation key means the user is driving
 
         switch (e.Key)
         {
