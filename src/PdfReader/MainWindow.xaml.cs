@@ -58,6 +58,13 @@ public sealed partial class MainWindow : Window
     private bool _laserOn;
     private Point _lastPointerInRoot;
 
+    // Settling loop for entering/resizing presentation: re-checks fit + center
+    // on a timer until stable, because relying on SizeChanged/ViewChanged
+    // events misses transitions that leave the offset numerically unchanged.
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _settleTimer;
+    private int _settleTicks;
+    private int _settleStableTicks;
+
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gotoTimer;
@@ -902,6 +909,7 @@ public sealed partial class MainWindow : Window
         if (_presenting)
         {
             ApplyFitPage();
+            StartPresentationSettle(); // verify until stable at the new size
         }
         else if (_fitWidthMode)
         {
@@ -970,13 +978,70 @@ public sealed partial class MainWindow : Window
         ApplyFitPage();
         Scroller.Focus(FocusState.Programmatic);
 
-        // Switching to the full-screen presenter resizes the window a beat
-        // later, so the fit above used the pre-full-screen size. Re-fit once
-        // the new size has settled (Scroller_SizeChanged also re-fits, but this
-        // guarantees a final authoritative center even if that doesn't fire).
-        DispatcherQueue.TryEnqueue(
-            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
-            () => { if (_presenting) ApplyFitPage(); });
+        // The full-screen resize lands asynchronously; verify-and-correct on a
+        // timer until the view is provably stable.
+        StartPresentationSettle();
+    }
+
+    /// <summary>
+    /// Runs a short verify-and-correct loop after entering presentation or a
+    /// size change: every tick it checks that the zoom matches a whole-slide
+    /// fit for the CURRENT viewport and that the current slide is centered,
+    /// reapplying the fit when not. Stops after two consecutive stable ticks
+    /// (or a bounded maximum). This converges regardless of event timing —
+    /// geometry changes that don't move the scroll offset fire no events at
+    /// all, which is how the view previously got stuck half-fitted.
+    /// </summary>
+    private void StartPresentationSettle()
+    {
+        if (_settleTimer is null)
+        {
+            _settleTimer = DispatcherQueue.CreateTimer();
+            _settleTimer.Interval = TimeSpan.FromMilliseconds(150);
+            _settleTimer.IsRepeating = true;
+            _settleTimer.Tick += (_, _) => SettleTick();
+        }
+
+        _settleTicks = 0;
+        _settleStableTicks = 0;
+        _settleTimer.Start();
+    }
+
+    private void SettleTick()
+    {
+        if (!_presenting || _doc is null || _doc.Pages.Count == 0)
+        {
+            _settleTimer?.Stop();
+            return;
+        }
+
+        double vw = Scroller.ViewportWidth, vh = Scroller.ViewportHeight;
+        double pw = _doc.Pages.Max(p => p.BaseWidth);
+        double ph = _doc.Pages.Max(p => p.BaseHeight);
+        bool stable = false;
+
+        if (vw > 0 && vh > 0 && pw > 0 && ph > 0)
+        {
+            double wantedZoom = Math.Clamp(
+                Math.Min((vw - 24) / pw, (vh - 24) / ph), MinZoom, MaxZoom);
+            double wantedSpacing = Math.Max(PageSpacing, vh);
+            double target = Math.Clamp(
+                ScrollTargetFor(_currentPage), 0, Scroller.ScrollableHeight);
+
+            stable = Math.Abs(wantedZoom - _doc.Zoom) < 0.001 &&
+                     Math.Abs(wantedSpacing - LayoutSpacing) < 0.5 &&
+                     Math.Abs(target - Scroller.VerticalOffset) <= 1;
+            if (!stable)
+            {
+                ApplyFitPage();
+            }
+        }
+
+        _settleStableTicks = stable ? _settleStableTicks + 1 : 0;
+        if (_settleStableTicks >= 2 || ++_settleTicks > 20)
+        {
+            _settleTimer?.Stop();
+        }
     }
 
     private void ExitPresentation()
@@ -987,6 +1052,7 @@ public sealed partial class MainWindow : Window
         }
 
         SetLaser(false); // restore the OS cursor before leaving full screen
+        _settleTimer?.Stop();
         _presenting = false;
         AppWindow.SetPresenter(AppWindowPresenterKind.Overlapped);
 
