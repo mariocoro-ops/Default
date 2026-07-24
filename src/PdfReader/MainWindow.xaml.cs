@@ -1083,7 +1083,7 @@ public sealed partial class MainWindow : Window
         // element re-shows its own cursor. Win32 hooks can't win this fight:
         // WinUI applies element cursors from its input pipeline.
         ToolState.Current.LaserActive = on;
-        Scroller.SetCursorHidden(on);
+        Controls.CursorHelper.SetHidden(Scroller, on);
     }
 
     private void Root_PointerMoved(object sender, PointerRoutedEventArgs e)
