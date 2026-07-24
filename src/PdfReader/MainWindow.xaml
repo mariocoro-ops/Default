@@ -33,6 +33,7 @@
             <KeyboardAccelerator Key="F5" Invoked="PresentAccelerator_Invoked" />
             <KeyboardAccelerator Key="Escape" Invoked="EscapeAccelerator_Invoked" />
             <KeyboardAccelerator Key="H" Invoked="HandAccelerator_Invoked" />
+            <KeyboardAccelerator Key="N" Invoked="NoteAccelerator_Invoked" />
             <!-- PageUp/PageDown/Home/End are handled in Root_PreviewKeyDown so
                  they preempt the focused ScrollViewer's own screenful-scroll.
                  Digit / Enter / Backspace accelerators for "type a slide number"
@@ -178,8 +179,8 @@
                         <FontIcon Glyph="&#xE8E5;" FontSize="16" />
                     </Button>
                     <Button x:Name="SaveButton" Click="SaveButton_Click" Padding="9" IsEnabled="False"
-                            ToolTipService.ToolTip="Save an annotated copy (Ctrl+S)">
-                        <FontIcon Glyph="&#xE74E;" FontSize="16" />
+                            ToolTipService.ToolTip="Save As a new PDF (Ctrl+S) — always creates a new file">
+                        <FontIcon Glyph="&#xE792;" FontSize="16" />
                     </Button>
                     <Button x:Name="PrintButton" Click="PrintButton_Click" Padding="9" IsEnabled="False"
                             ToolTipService.ToolTip="Print (Ctrl+P)">

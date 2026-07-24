@@ -138,6 +138,13 @@ public sealed class ToolState : INotifyPropertyChanged
 
     public void RequestOpenUri(string uri) => OpenUriRequested?.Invoke(uri);
 
+    // ------------------------------------------------------------ sticky notes
+
+    /// <summary>Raised (with a page index) to drop a new post-it note on that page.</summary>
+    public event Action<uint>? AddNoteRequested;
+
+    public void RequestAddNote(uint pageIndex) => AddNoteRequested?.Invoke(pageIndex);
+
     // ------------------------------------------------------------ edit notifications
 
     // Raised by the overlay canvas on user edits so the window can maintain

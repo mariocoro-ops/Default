@@ -89,7 +89,7 @@ public sealed class AnnotationCanvas : Canvas
 
     // In-place text editor
     private TextBox? _activeEditor;
-    private TextBoxAnnotation? _editingAnnotation;
+    private ITextAnnotation? _editingAnnotation;
     private bool _closingEditor;
 
     // Word boxes for this page (base DIPs, reading order), fetched lazily.
@@ -107,12 +107,14 @@ public sealed class AnnotationCanvas : Canvas
         {
             ToolState.Current.PropertyChanged += OnToolStateChanged;
             ToolState.Current.SelectionOwnerChanged += OnSelectionOwnerChanged;
+            ToolState.Current.AddNoteRequested += OnAddNoteRequested;
             UpdateInteractivity();
         };
         Unloaded += (_, _) =>
         {
             ToolState.Current.PropertyChanged -= OnToolStateChanged;
             ToolState.Current.SelectionOwnerChanged -= OnSelectionOwnerChanged;
+            ToolState.Current.AddNoteRequested -= OnAddNoteRequested;
         };
 
         // WinUI 3's UIElement has no protected OnPointer* virtuals (unlike
@@ -498,7 +500,7 @@ public sealed class AnnotationCanvas : Canvas
 
         foreach (var annotation in Page.Annotations)
         {
-            if (annotation == _editingAnnotation)
+            if (ReferenceEquals(annotation, _editingAnnotation))
             {
                 continue; // its in-place editor stands in for the visual
             }
@@ -553,6 +555,37 @@ public sealed class AnnotationCanvas : Canvas
                 SetLeft(block, text.Position.X);
                 SetTop(block, text.Position.Y);
                 Add(block);
+                break;
+            }
+
+            case StickyNoteAnnotation note:
+            {
+                const double pad = 8;
+                var block = new TextBlock
+                {
+                    Text = string.IsNullOrEmpty(note.Text) ? " " : note.Text,
+                    FontSize = note.FontSize,
+                    Foreground = new SolidColorBrush(note.Color),
+                    TextWrapping = TextWrapping.Wrap,
+                    Width = note.Width - pad * 2,
+                };
+                block.Measure(new Size(note.Width - pad * 2, double.PositiveInfinity));
+                double height = block.DesiredSize.Height + pad * 2;
+                note.RenderSize = new Size(note.Width, height);
+
+                var card = new Border
+                {
+                    Width = note.Width,
+                    Height = height,
+                    Background = new SolidColorBrush(Color.FromArgb(255, 0xFF, 0xE0, 0x2B)), // post-it yellow
+                    BorderBrush = new SolidColorBrush(Colors.Black),
+                    BorderThickness = new Thickness(1.5),
+                    Padding = new Thickness(pad),
+                    Child = block,
+                };
+                SetLeft(card, note.Position.X);
+                SetTop(card, note.Position.Y);
+                Add(card);
                 break;
             }
 
@@ -813,7 +846,9 @@ public sealed class AnnotationCanvas : Canvas
 
             case AnnotationTool.Text:
             {
-                var hit = FindObjectAt<TextBoxAnnotation>(pos);
+                // Existing notes and text boxes can be grabbed to edit/move.
+                AnnotationBase? hit = FindObjectAt<StickyNoteAnnotation>(pos)
+                    ?? (AnnotationBase?)FindObjectAt<TextBoxAnnotation>(pos);
                 if (hit is not null)
                 {
                     BeginObjectPress(hit);
@@ -1030,11 +1065,19 @@ public sealed class AnnotationCanvas : Canvas
         switch (ToolState.Current.Tool)
         {
             case AnnotationTool.Hand:
-                // A grab that never became a drag is a click — follow a link
-                // under it, so the Hand tool navigates like the arrow does.
-                if (!_handMoved && LinkAt(_pressPos) is { } link)
+                // A grab that never became a drag is a click. Editing a note
+                // takes precedence (so you can revise notes while presenting),
+                // then following a link — matching the arrow tool.
+                if (!_handMoved)
                 {
-                    ActivateLink(link);
+                    if (FindObjectAt<StickyNoteAnnotation>(_pressPos) is { } note)
+                    {
+                        OpenTextEditor(note);
+                    }
+                    else if (LinkAt(_pressPos) is { } link)
+                    {
+                        ActivateLink(link);
+                    }
                 }
 
                 break;
@@ -1137,6 +1180,9 @@ public sealed class AnnotationCanvas : Canvas
                 case TextBoxAnnotation text:
                     text.Position = new Point(text.Position.X + dx, text.Position.Y + dy);
                     break;
+                case StickyNoteAnnotation note:
+                    note.Position = new Point(note.Position.X + dx, note.Position.Y + dy);
+                    break;
                 case CommentAnnotation comment:
                     comment.Position = new Point(comment.Position.X + dx, comment.Position.Y + dy);
                     break;
@@ -1156,6 +1202,9 @@ public sealed class AnnotationCanvas : Canvas
             {
                 case TextBoxAnnotation text:
                     OpenTextEditor(text);
+                    break;
+                case StickyNoteAnnotation note:
+                    OpenTextEditor(note);
                     break;
                 case CommentAnnotation comment:
                     OpenCommentEditor(comment);
@@ -1246,6 +1295,8 @@ public sealed class AnnotationCanvas : Canvas
             text.Position.Y,
             Math.Max(40, text.RenderSize.Width),
             Math.Max(20, text.RenderSize.Height)),
+        StickyNoteAnnotation note => new Rect(
+            note.Position.X, note.Position.Y, note.RenderSize.Width, Math.Max(20, note.RenderSize.Height)),
         CommentAnnotation comment => new Rect(
             comment.Position.X, comment.Position.Y, CommentAnnotation.IconSize, CommentAnnotation.IconSize),
         SignatureAnnotation signature => signature.Bounds,
@@ -1254,27 +1305,48 @@ public sealed class AnnotationCanvas : Canvas
 
     // ------------------------------------------------------------ text box editor
 
-    private void OpenTextEditor(TextBoxAnnotation annotation)
+    private void OpenTextEditor(ITextAnnotation annotation)
     {
         CloseActiveEditor(commit: true);
 
         _editingAnnotation = annotation;
-        _activeEditor = new TextBox
+        // The editor must receive input even if the current tool would leave the
+        // overlay non-interactive (e.g. a note added by shortcut in select mode).
+        IsHitTestVisible = true;
+
+        var editor = new TextBox
         {
             Text = annotation.Text,
             FontSize = annotation.FontSize,
             AcceptsReturn = true,
-            TextWrapping = TextWrapping.NoWrap,
-            MinWidth = 140,
             Foreground = new SolidColorBrush(annotation.Color),
-            // The app is dark-themed but the editor floats on the white page.
+            // The app is dark-themed but the editor floats on the light page.
             RequestedTheme = ElementTheme.Light,
-            Background = new SolidColorBrush(Colors.White),
         };
-        // Offset roughly compensates the TextBox's inner padding so the
-        // editor's text sits where the committed TextBlock will render.
-        SetLeft(_activeEditor, annotation.Position.X - 10);
-        SetTop(_activeEditor, annotation.Position.Y - 6);
+
+        if (annotation is StickyNoteAnnotation note)
+        {
+            // Fixed width, wrapping, styled to match the yellow note card.
+            editor.TextWrapping = TextWrapping.Wrap;
+            editor.Width = note.Width;
+            editor.Background = new SolidColorBrush(Color.FromArgb(255, 0xFF, 0xE0, 0x2B));
+            editor.BorderBrush = new SolidColorBrush(Colors.Black);
+            editor.BorderThickness = new Thickness(1.5);
+            SetLeft(editor, note.Position.X);
+            SetTop(editor, note.Position.Y);
+        }
+        else
+        {
+            editor.TextWrapping = TextWrapping.NoWrap;
+            editor.MinWidth = 140;
+            editor.Background = new SolidColorBrush(Colors.White);
+            // Offset roughly compensates the TextBox's inner padding so the
+            // editor's text sits where the committed TextBlock will render.
+            SetLeft(editor, annotation.Position.X - 10);
+            SetTop(editor, annotation.Position.Y - 6);
+        }
+
+        _activeEditor = editor;
         _activeEditor.LostFocus += (_, _) => CloseActiveEditor(commit: true);
 
         Rebuild(); // hides the static visual, re-adds the editor
@@ -1314,12 +1386,13 @@ public sealed class AnnotationCanvas : Canvas
                 annotation.Text = editor.Text;
             }
 
+            var baseAnnotation = (AnnotationBase)annotation;
             if (string.IsNullOrWhiteSpace(annotation.Text))
             {
-                // An empty text box is pointless — treat as removed.
-                if (Page is not null && Page.Annotations.Remove(annotation))
+                // An empty text box / note is pointless — treat as removed.
+                if (Page is not null && Page.Annotations.Remove(baseAnnotation))
                 {
-                    ToolState.Current.NotifyAnnotationRemoved(Page, annotation);
+                    ToolState.Current.NotifyAnnotationRemoved(Page, baseAnnotation);
                 }
                 else
                 {
@@ -1333,6 +1406,26 @@ public sealed class AnnotationCanvas : Canvas
         }
 
         _closingEditor = false;
+        UpdateInteractivity(); // restore hit-testing to match the current tool
+    }
+
+    private void OnAddNoteRequested(uint pageIndex)
+    {
+        if (Page is null || Page.Index != pageIndex)
+        {
+            return;
+        }
+
+        // Drop the note near the center of the page and open it for typing.
+        var note = new StickyNoteAnnotation
+        {
+            Position = new Point(
+                Math.Max(0, Width / 2 - StickyNoteAnnotation.DefaultWidth / 2),
+                Math.Max(0, Height / 2 - 40)),
+        };
+        Page.Annotations.Add(note);
+        ToolState.Current.NotifyAnnotationAdded(Page, note);
+        OpenTextEditor(note);
     }
 
     // ------------------------------------------------------------ comment editor

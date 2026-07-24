@@ -1,6 +1,7 @@
 using PdfReader.Models;
 using PdfReader.ViewModels;
 using PdfSharp.Drawing;
+using PdfSharp.Drawing.Layout;
 using PdfSharp.Pdf;
 using PdfSharp.Pdf.Annotations;
 using PdfIO = PdfSharp.Pdf.IO;
@@ -102,6 +103,33 @@ public static class PdfSaveService
                         XStringFormats.TopLeft);
                 }
 
+                break;
+            }
+
+            case StickyNoteAnnotation sticky when !string.IsNullOrWhiteSpace(sticky.Text):
+            {
+                const double pad = 8;
+                double x = sticky.Position.X * sx;
+                double y = sticky.Position.Y * sy;
+                double w = sticky.Width * sx;
+                double h = sticky.RenderSize.Height * sy;
+
+                // Yellow card with a black border, matching the on-screen note.
+                gfx.DrawRectangle(
+                    new XSolidBrush(XColor.FromArgb(255, 0xFF, 0xE0, 0x2B)),
+                    x, y, w, h);
+                gfx.DrawRectangle(new XPen(XColors.Black, 1.5 * sx), x, y, w, h);
+
+                var font = new XFont("Arial", sticky.FontSize * sy, XFontStyleEx.Regular);
+                var brush = new XSolidBrush(XColor.FromArgb(
+                    255, sticky.Color.R, sticky.Color.G, sticky.Color.B));
+                var formatter = new XTextFormatter(gfx);
+                formatter.DrawString(
+                    sticky.Text,
+                    font,
+                    brush,
+                    new XRect(x + pad * sx, y + pad * sy, w - 2 * pad * sx, h - 2 * pad * sy),
+                    XStringFormats.TopLeft);
                 break;
             }
 

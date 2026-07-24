@@ -41,8 +41,20 @@ public sealed class HighlightAnnotation : AnnotationBase
     public Color Color { get; set; }
 }
 
+/// <summary>A text-bearing annotation the in-place editor can drive.</summary>
+public interface ITextAnnotation
+{
+    Point Position { get; set; }
+
+    string Text { get; set; }
+
+    double FontSize { get; }
+
+    Color Color { get; }
+}
+
 /// <summary>A typed text box placed on the page.</summary>
-public sealed class TextBoxAnnotation : AnnotationBase
+public sealed class TextBoxAnnotation : AnnotationBase, ITextAnnotation
 {
     public Point Position { get; set; }
 
@@ -54,6 +66,29 @@ public sealed class TextBoxAnnotation : AnnotationBase
 
     /// <summary>Measured display size (base DIPs); set at render time, used for hit tests and dragging.</summary>
     public Size RenderSize { get; set; } = new(120, 24);
+}
+
+/// <summary>
+/// A bright-yellow, black-bordered post-it note: a fixed-width box whose text
+/// wraps and grows downward. Handy for jotting notes while presenting (N).
+/// </summary>
+public sealed class StickyNoteAnnotation : AnnotationBase, ITextAnnotation
+{
+    public const double DefaultWidth = 220.0;
+
+    public Point Position { get; set; }
+
+    public string Text { get; set; } = string.Empty;
+
+    public double FontSize { get; set; } = 15.0;
+
+    public Color Color { get; set; } = Color.FromArgb(255, 0x1A, 0x1A, 0x1A); // near-black text
+
+    /// <summary>Fixed layout width (base DIPs); height grows with the text.</summary>
+    public double Width { get; set; } = DefaultWidth;
+
+    /// <summary>Measured display size (base DIPs); set at render time.</summary>
+    public Size RenderSize { get; set; } = new(DefaultWidth, 48);
 }
 
 /// <summary>A sticky-note comment anchored to a point on the page.</summary>
@@ -137,6 +172,12 @@ public static class AnnotationGeometry
                         text.Position.Y,
                         Math.Max(40, text.RenderSize.Width),
                         Math.Max(20, text.RenderSize.Height)),
+                    p,
+                    2);
+
+            case StickyNoteAnnotation note:
+                return Contains(
+                    new Rect(note.Position.X, note.Position.Y, note.RenderSize.Width, Math.Max(20, note.RenderSize.Height)),
                     p,
                     2);
 
