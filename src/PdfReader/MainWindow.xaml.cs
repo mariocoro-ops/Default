@@ -46,9 +46,10 @@ public sealed partial class MainWindow : Window
     private double _panStartHorizontal;
     private double _panStartVertical;
 
-    // True while a jump we initiated is settling, so the scroll tracker doesn't
-    // recompute the current page from a mid-animation offset.
-    private bool _programmaticScroll;
+    // The page explicitly navigated to (-1 = none). Re-validated on every
+    // scroll settle instead of a consume-once flag, which could get stuck when
+    // a ChangeView produced no event (e.g. already at the target).
+    private int _commandedPage = -1;
 
     // Full-screen presentation mode.
     private bool _presenting;
@@ -64,6 +65,7 @@ public sealed partial class MainWindow : Window
     // cursor) while the laser is on, which the framework can't override.
     private const int GWLP_WNDPROC = -4;
     private const uint WM_SETCURSOR = 0x0020;
+    private const uint WM_MOUSEMOVE = 0x0200;
     private const int HTCLIENT = 1;
 
     private delegate IntPtr WndProcDelegate(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
@@ -203,9 +205,19 @@ public sealed partial class MainWindow : Window
             return (IntPtr)1; // TRUE — handled
         }
 
-        return _originalProcs.TryGetValue(hWnd, out var original) && original != IntPtr.Zero
+        var result = _originalProcs.TryGetValue(hWnd, out var original) && original != IntPtr.Zero
             ? CallWindowProc(original, hWnd, msg, wParam, lParam)
             : DefWindowProc(hWnd, msg, wParam, lParam);
+
+        // WinUI's pointer pipeline also calls SetCursor directly while
+        // processing mouse moves (not just via WM_SETCURSOR). Re-null the
+        // cursor after its handler ran — last write wins until the next move.
+        if (msg == WM_MOUSEMOVE && _laserOn)
+        {
+            SetCursor(IntPtr.Zero);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -301,7 +313,6 @@ public sealed partial class MainWindow : Window
         _fitWidthMode = true;
         Root.UpdateLayout();
         ApplyFitWidth();
-        _programmaticScroll = true;
         Scroller.ChangeView(0, 0, null, disableAnimation: true);
 
         // Park keyboard focus on the document, not the Open button — a
@@ -666,14 +677,6 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // A jump we commanded already set _currentPage; don't let the settle
-        // event recompute it (that's what made presses drift).
-        if (_programmaticScroll)
-        {
-            _programmaticScroll = false;
-            return;
-        }
-
         if (_doc is null || _doc.Pages.Count == 0)
         {
             return;
@@ -694,9 +697,21 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // Manual scroll: the current page is the one whose top the viewport has
-        // reached — computed straight from the offset, so it never drifts.
-        int page = TopPageAt(Scroller.VerticalOffset);
+        // If the view sits where a commanded jump landed (allowing for end-of-
+        // document clamping), keep that page; otherwise it was a manual scroll,
+        // so recompute from the offset — which can never drift or get stuck.
+        int page;
+        if (_commandedPage > 0 &&
+            Math.Abs(Math.Clamp(ScrollTargetFor(_commandedPage), 0, Scroller.ScrollableHeight) - Scroller.VerticalOffset) <= 2)
+        {
+            page = _commandedPage;
+        }
+        else
+        {
+            _commandedPage = -1;
+            page = TopPageAt(Scroller.VerticalOffset);
+        }
+
         if (page != _currentPage)
         {
             _currentPage = page;
@@ -790,7 +805,7 @@ public sealed partial class MainWindow : Window
         }
 
         pageNumber = Math.Clamp(pageNumber, 1, _doc.Pages.Count);
-        _programmaticScroll = true;
+        _commandedPage = pageNumber;
         Scroller.ChangeView(null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
@@ -811,7 +826,6 @@ public sealed partial class MainWindow : Window
             + Math.Clamp(topFraction, 0, 1) * _doc.Pages[pageIndex].DisplayHeight;
         offset = Math.Max(0, offset - 8); // a little headroom above the target
 
-        _programmaticScroll = true;
         Scroller.ChangeView(null, offset, null, disableAnimation: false);
         _currentPage = pageIndex + 1;
         PageBox.Text = _currentPage.ToString();
@@ -940,9 +954,27 @@ public sealed partial class MainWindow : Window
         }
 
         double zoom = (viewport - ContentMargin * 2) / maxPageWidth;
+        if (Math.Abs(zoom - _doc.Zoom) < 0.001)
+        {
+            ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
+            return;
+        }
+
+        // Re-zooming rescales every page height while the scroll offset stays
+        // numerically the same — silently relocating the view to a different
+        // page. Capture the page (and position within it) first, and restore
+        // it after the reflow, so window resizes keep you where you were.
+        int anchorPage = TopPageAt(Scroller.VerticalOffset);
+        double heightBefore = Math.Max(1, _doc.Pages[anchorPage - 1].DisplayHeight);
+        double fraction = Math.Clamp(
+            (Scroller.VerticalOffset - PageTop(anchorPage)) / heightBefore, -0.5, 1.5);
+
         SetZoom(zoom, keepAnchor: false);
-        // First-time zoom text update even if SetZoom short-circuits.
         ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
+
+        Root.UpdateLayout();
+        double target = PageTop(anchorPage) + fraction * _doc.Pages[anchorPage - 1].DisplayHeight;
+        Scroller.ChangeView(null, Math.Max(0, target), null, disableAnimation: true);
     }
 
     /// <summary>Fits the whole slide on screen (used in presentation mode) and centers it.</summary>
@@ -1149,13 +1181,13 @@ public sealed partial class MainWindow : Window
 
     private void Root_PointerMoved(object sender, PointerRoutedEventArgs e)
     {
+        var pos = e.GetCurrentPoint(Root).Position;
+        _lastPointerInRoot = pos; // used for N-to-add-note placement everywhere
+
         if (!_presenting)
         {
             return;
         }
-
-        var pos = e.GetCurrentPoint(Root).Position;
-        _lastPointerInRoot = pos;
 
         if (_laserOn)
         {
@@ -1359,7 +1391,7 @@ public sealed partial class MainWindow : Window
         }
 
         args.Handled = true;
-        ToolState.Current.RequestAddNote((uint)(_currentPage - 1));
+        ToolState.Current.RequestAddNote((uint)(_currentPage - 1), _lastPointerInRoot);
     }
 
     // ---------------------------------------------------------------- page keys / slide number

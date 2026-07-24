@@ -807,12 +807,21 @@ public sealed class AnnotationCanvas : Canvas
         switch (tool)
         {
             case AnnotationTool.Hand:
-                // Track in window coordinates so the deltas we feed back into
-                // the ScrollViewer aren't themselves moved by the scrolling.
-                _panning = true;
-                _handMoved = false;
-                _panStart = e.GetCurrentPoint(null).Position;
-                ToolState.Current.NotifyPanStarted();
+                // Grabbing a post-it moves the note itself; grabbing anywhere
+                // else pans the document. Track pan deltas in window
+                // coordinates so they aren't moved by the scrolling they drive.
+                if (FindObjectAt<StickyNoteAnnotation>(pos) is { } grabbedNote)
+                {
+                    BeginObjectPress(grabbedNote);
+                }
+                else
+                {
+                    _panning = true;
+                    _handMoved = false;
+                    _panStart = e.GetCurrentPoint(null).Position;
+                    ToolState.Current.NotifyPanStarted();
+                }
+
                 break;
 
             case AnnotationTool.Draw:
@@ -951,6 +960,10 @@ public sealed class AnnotationCanvas : Canvas
 
         switch (ToolState.Current.Tool)
         {
+            case AnnotationTool.Hand when _pressedObject is not null:
+                UpdateObjectDrag(pos); // dragging a post-it note
+                break;
+
             case AnnotationTool.Hand when _panning:
             {
                 var p = e.GetCurrentPoint(null).Position;
@@ -1065,19 +1078,15 @@ public sealed class AnnotationCanvas : Canvas
         switch (ToolState.Current.Tool)
         {
             case AnnotationTool.Hand:
-                // A grab that never became a drag is a click. Editing a note
-                // takes precedence (so you can revise notes while presenting),
-                // then following a link — matching the arrow tool.
-                if (!_handMoved)
+                if (_pressedObject is not null)
                 {
-                    if (FindObjectAt<StickyNoteAnnotation>(_pressPos) is { } note)
-                    {
-                        OpenTextEditor(note);
-                    }
-                    else if (LinkAt(_pressPos) is { } link)
-                    {
-                        ActivateLink(link);
-                    }
+                    // A note grab: drag committed the move; a plain click
+                    // opens the note's editor (works while presenting).
+                    CommitObjectInteraction(pos);
+                }
+                else if (!_handMoved && LinkAt(_pressPos) is { } link)
+                {
+                    ActivateLink(link);
                 }
 
                 break;
@@ -1408,20 +1417,59 @@ public sealed class AnnotationCanvas : Canvas
         UpdateInteractivity(); // restore hit-testing to match the current tool
     }
 
-    private void OnAddNoteRequested(uint pageIndex)
+    private void OnAddNoteRequested(uint fallbackPageIndex, Point pointerInWindow, bool isFallbackPhase)
     {
-        if (Page is null || Page.Index != pageIndex)
+        if (Page is null || ToolState.Current.NoteRequestClaimed)
         {
             return;
         }
 
-        // Drop the note near the center of the page and open it for typing.
-        var note = new StickyNoteAnnotation
+        if (!isFallbackPhase)
         {
-            Position = new Point(
+            // Phase one: place at the cursor if it's over this page.
+            if (XamlRoot?.Content is not UIElement rootContent)
+            {
+                return;
+            }
+
+            Point local;
+            try
+            {
+                local = rootContent.TransformToVisual(this).TransformPoint(pointerInWindow);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (local.X < 0 || local.Y < 0 || local.X > Width || local.Y > Height)
+            {
+                return; // pointer isn't over this page
+            }
+
+            ToolState.Current.ClaimNoteRequest();
+            AddNoteAt(new Point(
+                Math.Clamp(local.X, 0, Math.Max(0, Width - StickyNoteAnnotation.DefaultWidth)),
+                Math.Clamp(local.Y, 0, Math.Max(0, Height - 48))));
+        }
+        else if (Page.Index == fallbackPageIndex)
+        {
+            // Phase two: pointer wasn't over any page — center on the current one.
+            ToolState.Current.ClaimNoteRequest();
+            AddNoteAt(new Point(
                 Math.Max(0, Width / 2 - StickyNoteAnnotation.DefaultWidth / 2),
-                Math.Max(0, Height / 2 - 40)),
-        };
+                Math.Max(0, Height / 2 - 40)));
+        }
+    }
+
+    private void AddNoteAt(Point position)
+    {
+        if (Page is null)
+        {
+            return;
+        }
+
+        var note = new StickyNoteAnnotation { Position = position };
         Page.Annotations.Add(note);
         ToolState.Current.NotifyAnnotationAdded(Page, note);
         OpenTextEditor(note);

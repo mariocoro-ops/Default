@@ -140,10 +140,28 @@ public sealed class ToolState : INotifyPropertyChanged
 
     // ------------------------------------------------------------ sticky notes
 
-    /// <summary>Raised (with a page index) to drop a new post-it note on that page.</summary>
-    public event Action<uint>? AddNoteRequested;
+    /// <summary>
+    /// Raised to drop a new post-it note: (fallback page index, pointer position
+    /// in window coordinates, isFallbackPhase). Phase one lets the page under
+    /// the pointer place the note at the cursor; if none claims it, phase two
+    /// has the fallback page center it.
+    /// </summary>
+    public event Action<uint, Windows.Foundation.Point, bool>? AddNoteRequested;
 
-    public void RequestAddNote(uint pageIndex) => AddNoteRequested?.Invoke(pageIndex);
+    /// <summary>Set by the canvas that placed the note, ending the request.</summary>
+    public bool NoteRequestClaimed { get; private set; }
+
+    public void ClaimNoteRequest() => NoteRequestClaimed = true;
+
+    public void RequestAddNote(uint fallbackPageIndex, Windows.Foundation.Point pointerInWindow)
+    {
+        NoteRequestClaimed = false;
+        AddNoteRequested?.Invoke(fallbackPageIndex, pointerInWindow, false);
+        if (!NoteRequestClaimed)
+        {
+            AddNoteRequested?.Invoke(fallbackPageIndex, pointerInWindow, true);
+        }
+    }
 
     // ------------------------------------------------------------ edit notifications
 

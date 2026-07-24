@@ -105,7 +105,7 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 | Select & copy text | Text-select tool (I-beam icon), drag across text, then `Ctrl+C` — or switch straight to the highlighter to highlight the selection. Selection follows columns in multi-column layouts |
 | Add text | Text tool (font icon), click a spot, type; click away to commit; click existing text to edit, drag to move; sizes under the palette icon |
 | Comment | Comment tool, click a spot, write the note; click an icon to reopen, drag to move. Saved as a real PDF sticky note |
-| Post-it note | Press `N` (works while presenting too) to drop a bright-yellow, black-bordered note on the current page and start typing; text wraps and the box grows down. Drag to move (text tool), click to re-edit. Saved into the PDF |
+| Post-it note | Press `N` (works while presenting too) to drop a bright-yellow, black-bordered note **at the cursor** and start typing; text wraps and the box grows down. Drag it with the hand or text tool, click to re-edit. Saved into the PDF |
 | Signature | Signature tool — first use asks for a scanned image (white background is made transparent automatically); then click to place, drag to move, drag the corner handle to resize. Manage the saved image under the palette icon |
 | Erase | Eraser tool, then click (or drag over) a mark |
 | Undo | `Ctrl+Z` or the undo button |
