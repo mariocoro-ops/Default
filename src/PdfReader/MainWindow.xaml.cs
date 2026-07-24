@@ -6,6 +6,8 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Windowing;
 using PdfReader.Models;
 using PdfReader.Services;
 using PdfReader.ViewModels;
@@ -42,9 +44,22 @@ public sealed partial class MainWindow : Window
     private double _panStartHorizontal;
     private double _panStartVertical;
 
+    // True while a jump we initiated is settling, so the scroll tracker doesn't
+    // recompute the current page from a mid-animation offset.
+    private bool _programmaticScroll;
+
+    // Full-screen presentation mode.
+    private bool _presenting;
+    private bool _chromeShown = true;
+    private Brush? _defaultScrollerBackground;
+
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gotoTimer;
+
+    /// <summary>Vertical gap between pages. In presentation mode it's a full
+    /// screen so only one slide is ever visible.</summary>
+    private double PageGap => _presenting ? Math.Max(PageSpacing, Scroller.ViewportHeight) : PageSpacing;
 
     public MainWindow()
     {
@@ -87,6 +102,15 @@ public sealed partial class MainWindow : Window
             UIElement.PointerWheelChangedEvent,
             new PointerEventHandler(Scroller_PointerWheelChanged),
             handledEventsToo: true);
+
+        // Cursor-to-top reveal of the chrome while presenting. handledEventsToo
+        // so it fires even over the page/overlay which may mark moves handled.
+        Root.AddHandler(
+            UIElement.PointerMovedEvent,
+            new PointerEventHandler(Root_PointerMoved),
+            handledEventsToo: true);
+
+        _defaultScrollerBackground = Scroller.Background;
 
         RegisterSlideNumberAccelerators();
     }
@@ -179,10 +203,12 @@ public sealed partial class MainWindow : Window
         SignatureToolButton.IsEnabled = true;
         EraseToolButton.IsEnabled = true;
         ColorsButton.IsEnabled = true;
+        PresentButton.IsEnabled = true;
 
         _fitWidthMode = true;
         Root.UpdateLayout();
         ApplyFitWidth();
+        _programmaticScroll = true;
         Scroller.ChangeView(0, 0, null, disableAnimation: true);
 
         // Park keyboard focus on the document, not the Open button — a
@@ -532,38 +558,27 @@ public sealed partial class MainWindow : Window
 
     private void Scroller_ViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
     {
-        // Only track once the view settles: intermediate events during an
-        // animated page jump would recompute _currentPage from a mid-flight
-        // offset and make rapid PageDown presses re-target the same page.
-        if (!e.IsIntermediate)
+        if (e.IsIntermediate)
         {
-            UpdateCurrentPageFromScroll();
+            return;
         }
-    }
 
-    private void UpdateCurrentPageFromScroll()
-    {
+        // A jump we commanded already set _currentPage; don't let the settle
+        // event recompute it (that's what made presses drift).
+        if (_programmaticScroll)
+        {
+            _programmaticScroll = false;
+            return;
+        }
+
         if (_doc is null || _doc.Pages.Count == 0)
         {
             return;
         }
 
-        double center = Scroller.VerticalOffset + Scroller.ViewportHeight / 2;
-        double y = ContentMargin;
-        int page = _doc.Pages.Count;
-
-        for (int i = 0; i < _doc.Pages.Count; i++)
-        {
-            double bottom = y + _doc.Pages[i].DisplayHeight;
-            if (center < bottom + PageSpacing / 2)
-            {
-                page = i + 1;
-                break;
-            }
-
-            y = bottom + PageSpacing;
-        }
-
+        // Manual scroll: the current page is the one whose top the viewport has
+        // reached — computed straight from the offset, so it never drifts.
+        int page = TopPageAt(Scroller.VerticalOffset);
         if (page != _currentPage)
         {
             _currentPage = page;
@@ -574,6 +589,58 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>Scroll offset of the top of a 1-based page.</summary>
+    private double PageTop(int pageNumber)
+    {
+        double offset = ContentMargin;
+        for (int i = 0; i < pageNumber - 1 && i < _doc!.Pages.Count; i++)
+        {
+            offset += _doc.Pages[i].DisplayHeight + PageGap;
+        }
+
+        return offset;
+    }
+
+    /// <summary>Scroll target for a page — centered in the viewport while presenting.</summary>
+    private double ScrollTargetFor(int pageNumber)
+    {
+        double target = PageTop(pageNumber);
+        if (_presenting && _doc is not null)
+        {
+            double ph = _doc.Pages[pageNumber - 1].DisplayHeight;
+            target -= Math.Max(0, (Scroller.ViewportHeight - ph) / 2);
+        }
+
+        return Math.Max(0, target);
+    }
+
+    /// <summary>The 1-based page whose top the given offset has reached.</summary>
+    private int TopPageAt(double offset)
+    {
+        if (_doc is null || _doc.Pages.Count == 0)
+        {
+            return 1;
+        }
+
+        int page = 1;
+        double y = ContentMargin;
+        for (int i = 0; i < _doc.Pages.Count; i++)
+        {
+            if (y <= offset + 4)
+            {
+                page = i + 1;
+            }
+            else
+            {
+                break;
+            }
+
+            y += _doc.Pages[i].DisplayHeight + PageGap;
+        }
+
+        return page;
+    }
+
     private void JumpToPage(int pageNumber, bool animate = false)
     {
         if (_doc is null)
@@ -582,13 +649,8 @@ public sealed partial class MainWindow : Window
         }
 
         pageNumber = Math.Clamp(pageNumber, 1, _doc.Pages.Count);
-        double offset = ContentMargin;
-        for (int i = 0; i < pageNumber - 1; i++)
-        {
-            offset += _doc.Pages[i].DisplayHeight + PageSpacing;
-        }
-
-        Scroller.ChangeView(null, offset, null, disableAnimation: !animate);
+        _programmaticScroll = true;
+        Scroller.ChangeView(null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
     }
@@ -604,16 +666,11 @@ public sealed partial class MainWindow : Window
         }
 
         pageIndex = Math.Clamp(pageIndex, 0, _doc.Pages.Count - 1);
-        double offset = ContentMargin;
-        for (int i = 0; i < pageIndex; i++)
-        {
-            offset += _doc.Pages[i].DisplayHeight + PageSpacing;
-        }
-
-        offset += Math.Clamp(topFraction, 0, 1) * _doc.Pages[pageIndex].DisplayHeight;
+        double offset = PageTop(pageIndex + 1)
+            + Math.Clamp(topFraction, 0, 1) * _doc.Pages[pageIndex].DisplayHeight;
         offset = Math.Max(0, offset - 8); // a little headroom above the target
 
-        // Animated so the jump reads as navigation rather than a teleport.
+        _programmaticScroll = true;
         Scroller.ChangeView(null, offset, null, disableAnimation: false);
         _currentPage = pageIndex + 1;
         PageBox.Text = _currentPage.ToString();
@@ -747,6 +804,32 @@ public sealed partial class MainWindow : Window
         ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
     }
 
+    /// <summary>Fits the whole slide on screen (used in presentation mode) and centers it.</summary>
+    private void ApplyFitPage()
+    {
+        if (_doc is null || _doc.Pages.Count == 0)
+        {
+            return;
+        }
+
+        double vw = Scroller.ViewportWidth > 0 ? Scroller.ViewportWidth : Root.ActualWidth;
+        double vh = Scroller.ViewportHeight > 0 ? Scroller.ViewportHeight : Root.ActualHeight;
+        double pw = _doc.Pages.Max(p => p.BaseWidth);
+        double ph = _doc.Pages.Max(p => p.BaseHeight);
+        if (vw <= 0 || vh <= 0 || pw <= 0 || ph <= 0)
+        {
+            return;
+        }
+
+        double zoom = Math.Min((vw - 24) / pw, (vh - 24) / ph);
+        SetZoom(zoom, keepAnchor: false);
+        ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
+
+        PagesLayout.Spacing = PageGap; // isolate each slide by a full screen
+        Root.UpdateLayout();
+        JumpToPage(_currentPage); // recenters via ScrollTargetFor
+    }
+
     private void ZoomInButton_Click(object sender, RoutedEventArgs e) => StepZoom(+1);
 
     private void ZoomOutButton_Click(object sender, RoutedEventArgs e) => StepZoom(-1);
@@ -759,9 +842,123 @@ public sealed partial class MainWindow : Window
 
     private void Scroller_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (_fitWidthMode)
+        if (_presenting)
+        {
+            ApplyFitPage();
+        }
+        else if (_fitWidthMode)
         {
             ApplyFitWidth();
+        }
+    }
+
+    // ---------------------------------------------------------------- presentation mode
+
+    private void PresentButton_Click(object sender, RoutedEventArgs e) => TogglePresentation();
+
+    private void PresentAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (_doc is null)
+        {
+            args.Handled = false;
+            return;
+        }
+
+        args.Handled = true;
+        TogglePresentation();
+    }
+
+    private void TogglePresentation()
+    {
+        if (_presenting)
+        {
+            ExitPresentation();
+        }
+        else if (_doc is not null)
+        {
+            EnterPresentation();
+        }
+    }
+
+    private void EnterPresentation()
+    {
+        if (_presenting || _doc is null)
+        {
+            return;
+        }
+
+        _presenting = true;
+        AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
+
+        DocumentHost.Margin = new Thickness(0);
+        Scroller.Background = new SolidColorBrush(Colors.Black);
+        ChromeBackground.Background = new SolidColorBrush(Windows.UI.Color.FromArgb(0xF0, 0x1C, 0x1C, 0x1C));
+        SetChromeShown(false);
+
+        // One slide, fit to screen, centered — hand tool so a click still pans
+        // or follows links but nothing gets drawn by accident.
+        SetTool(AnnotationTool.Hand);
+        Root.UpdateLayout();
+        ApplyFitPage();
+        Scroller.Focus(FocusState.Programmatic);
+    }
+
+    private void ExitPresentation()
+    {
+        if (!_presenting)
+        {
+            return;
+        }
+
+        _presenting = false;
+        AppWindow.SetPresenter(AppWindowPresenterKind.Overlapped);
+
+        ChromeBackground.Background = new SolidColorBrush(Colors.Transparent);
+        Scroller.Background = _defaultScrollerBackground;
+        SetChromeShown(true);
+        DocumentHost.Margin = new Thickness(0, ChromeHost.ActualHeight, 0, 0);
+
+        PagesLayout.Spacing = PageSpacing;
+        _fitWidthMode = true;
+        Root.UpdateLayout();
+        ApplyFitWidth();
+        JumpToPage(_currentPage);
+        Scroller.Focus(FocusState.Programmatic);
+    }
+
+    /// <summary>Slides the chrome (title bar + toolbar) in or out of view.</summary>
+    private void SetChromeShown(bool shown)
+    {
+        _chromeShown = shown;
+        ChromeTransform.Y = shown ? 0 : -Math.Max(1, ChromeHost.ActualHeight);
+    }
+
+    private void ChromeHost_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (!_presenting)
+        {
+            DocumentHost.Margin = new Thickness(0, ChromeHost.ActualHeight, 0, 0);
+        }
+        else if (!_chromeShown)
+        {
+            ChromeTransform.Y = -Math.Max(1, ChromeHost.ActualHeight);
+        }
+    }
+
+    private void Root_PointerMoved(object sender, PointerRoutedEventArgs e)
+    {
+        if (!_presenting)
+        {
+            return;
+        }
+
+        double y = e.GetCurrentPoint(Root).Position.Y;
+        // Reveal when the cursor hugs the top edge; keep shown while it stays
+        // within the revealed chrome so you can reach the buttons.
+        bool show = y <= 6 || (_chromeShown && y <= ChromeHost.ActualHeight);
+        if (show != _chromeShown)
+        {
+            SetChromeShown(show);
         }
     }
 
@@ -892,6 +1089,14 @@ public sealed partial class MainWindow : Window
         if (_doc is not null && ToolState.Current.Tool != AnnotationTool.Hand)
         {
             SetTool(AnnotationTool.Hand);
+            args.Handled = true;
+            return;
+        }
+
+        // Already on the hand tool: the next Escape leaves presentation.
+        if (_presenting)
+        {
+            ExitPresentation();
             args.Handled = true;
             return;
         }

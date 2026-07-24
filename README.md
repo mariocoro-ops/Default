@@ -94,6 +94,7 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 | Open a PDF | `Ctrl+O`, the **Open** button, or drag & drop a file onto the window |
 | Navigate | Scroll, or `Page Down`/`Page Up` to advance one slide at a time; `Home`/`End` for the first/last page; the arrows / page box in the toolbar |
 | Go to slide | Just type the slide number and press `Enter` (works anywhere, like PowerPoint) — `Backspace` edits, `Esc` cancels |
+| Present | `F5` or the present button — full-screen one-slide-at-a-time view with the toolbar hidden; move the cursor to the top edge to reveal it. `Esc` returns to the hand tool, then exits full screen |
 | Pan | The hand tool is the default: grab and drag the page to move it around (`H` toggles it; `Esc` returns to it) |
 | Follow links | In select or hand mode, click a link in the PDF — internal links jump to the target page; external links open in the browser after a confirmation. With the hand tool, a click follows the link and a drag still pans |
 | Zoom | `Ctrl` + `+`/`-`, `Ctrl` + mouse wheel (zooms toward the cursor), or the toolbar buttons |
@@ -159,3 +160,6 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 - Column detection for text selection is heuristic (recursive XY-cut); most
   column layouts work, but unusual table-heavy pages may still group oddly —
   the freeform highlight fallback always works.
+- Presentation mode fits the whole slide on screen and centers it. Slides
+  whose aspect ratio matches the display fill it edge to edge; a mismatched
+  ratio (e.g. 4:3 on a widescreen) is letterboxed on a black background.

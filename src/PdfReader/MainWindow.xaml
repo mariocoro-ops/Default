@@ -30,6 +30,7 @@
             <KeyboardAccelerator Modifiers="Control" Key="Add" Invoked="ZoomInAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Subtract" Invoked="ZoomOutAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
+            <KeyboardAccelerator Key="F5" Invoked="PresentAccelerator_Invoked" />
             <KeyboardAccelerator Key="Escape" Invoked="EscapeAccelerator_Invoked" />
             <KeyboardAccelerator Key="H" Invoked="HandAccelerator_Invoked" />
             <!-- PageUp/PageDown/Home/End are handled in Root_PreviewKeyDown so
@@ -38,195 +39,10 @@
                  are registered in code-behind (20 digit keys is unwieldy here). -->
         </Grid.KeyboardAccelerators>
 
-        <Grid.RowDefinitions>
-            <RowDefinition Height="40" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="*" />
-        </Grid.RowDefinitions>
-
-        <!-- Custom title bar (draggable region) -->
-        <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" Padding="16,0,0,0">
-            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                <FontIcon Glyph="&#xEA90;" FontSize="14"
-                          Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
-                <TextBlock Text="Slate PDF"
-                           Style="{StaticResource CaptionTextBlockStyle}"
-                           VerticalAlignment="Center" />
-                <TextBlock x:Name="FileNameText"
-                           Style="{StaticResource CaptionTextBlockStyle}"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                           VerticalAlignment="Center" />
-            </StackPanel>
-        </Grid>
-
-        <!-- Toolbar -->
-        <Grid Grid.Row="1" Padding="12,4,12,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto" />
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="Auto" />
-            </Grid.ColumnDefinitions>
-
-            <!-- Left: file commands + annotation tools -->
-            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="4">
-                <Button x:Name="OpenButton" Click="OpenButton_Click" Padding="9"
-                        ToolTipService.ToolTip="Open a PDF (Ctrl+O)">
-                    <FontIcon Glyph="&#xE8E5;" FontSize="16" />
-                </Button>
-                <Button x:Name="SaveButton" Click="SaveButton_Click" Padding="9" IsEnabled="False"
-                        ToolTipService.ToolTip="Save an annotated copy (Ctrl+S)">
-                    <FontIcon Glyph="&#xE74E;" FontSize="16" />
-                </Button>
-                <Button x:Name="PrintButton" Click="PrintButton_Click" Padding="9" IsEnabled="False"
-                        ToolTipService.ToolTip="Print (Ctrl+P)">
-                    <FontIcon Glyph="&#xE749;" FontSize="16" />
-                </Button>
-
-                <AppBarSeparator />
-
-                <ToggleButton x:Name="HandToolButton" Click="HandToolButton_Click" Padding="9"
-                              IsEnabled="False" IsChecked="True"
-                              ToolTipService.ToolTip="Pan — grab and drag the page, click to follow links (H). Esc returns here.">
-                    <FontIcon Glyph="&#xE7C9;" FontSize="16" />
-                </ToggleButton>
-                <ToggleButton x:Name="SelectToolButton" Click="SelectToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Select / scroll">
-                    <FontIcon Glyph="&#xE8B0;" FontSize="16" />
-                </ToggleButton>
-                <ToggleButton x:Name="TextSelectToolButton" Click="TextSelectToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Select text — Ctrl+C copies it, or switch to the highlighter to highlight it">
-                    <!-- Segoe Fluent has no I-beam glyph, so draw one. -->
-                    <PathIcon Width="16" Height="16"
-                              Data="M5,0 L11,0 L11,1.5 L8.75,1.5 L8.75,14.5 L11,14.5 L11,16 L5,16 L5,14.5 L7.25,14.5 L7.25,1.5 L5,1.5 Z" />
-                </ToggleButton>
-                <ToggleButton x:Name="DrawToolButton" Click="DrawToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Draw with the pen">
-                    <FontIcon Glyph="&#xE70F;" FontSize="16" />
-                </ToggleButton>
-                <ToggleButton x:Name="HighlightToolButton" Click="HighlightToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Highlight text (drag across text)">
-                    <FontIcon Glyph="&#xE7E6;" FontSize="16" />
-                </ToggleButton>
-                <ToggleButton x:Name="TextToolButton" Click="TextToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Add text (click a spot, type, click away)">
-                    <FontIcon Glyph="&#xE8D2;" FontSize="16" />
-                </ToggleButton>
-                <ToggleButton x:Name="CommentToolButton" Click="CommentToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Add a comment note (click a spot)">
-                    <FontIcon Glyph="&#xE90A;" FontSize="16" />
-                </ToggleButton>
-                <ToggleButton x:Name="SignatureToolButton" Click="SignatureToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Place your signature (click a spot; drag corner to resize)">
-                    <FontIcon Glyph="&#xE76D;" FontSize="16" />
-                </ToggleButton>
-                <ToggleButton x:Name="EraseToolButton" Click="EraseToolButton_Click" Padding="9"
-                              IsEnabled="False"
-                              ToolTipService.ToolTip="Erase an annotation (click it)">
-                    <FontIcon Glyph="&#xED60;" FontSize="16" />
-                </ToggleButton>
-
-                <DropDownButton x:Name="ColorsButton" Padding="9" IsEnabled="False"
-                                ToolTipService.ToolTip="Pen and highlighter options">
-                    <FontIcon Glyph="&#xE790;" FontSize="16" />
-                    <DropDownButton.Flyout>
-                        <MenuFlyout>
-                            <MenuFlyoutSubItem Text="Pen color">
-                                <RadioMenuFlyoutItem Text="Red" GroupName="penColor" Tag="#E53935"
-                                                     IsChecked="True" Click="PenColorItem_Click" />
-                                <RadioMenuFlyoutItem Text="Blue" GroupName="penColor" Tag="#1E88E5"
-                                                     Click="PenColorItem_Click" />
-                                <RadioMenuFlyoutItem Text="Green" GroupName="penColor" Tag="#43A047"
-                                                     Click="PenColorItem_Click" />
-                                <RadioMenuFlyoutItem Text="Black" GroupName="penColor" Tag="#000000"
-                                                     Click="PenColorItem_Click" />
-                            </MenuFlyoutSubItem>
-                            <MenuFlyoutSubItem Text="Pen size">
-                                <RadioMenuFlyoutItem Text="Thin" GroupName="penSize" Tag="1.5"
-                                                     Click="PenSizeItem_Click" />
-                                <RadioMenuFlyoutItem Text="Medium" GroupName="penSize" Tag="3"
-                                                     IsChecked="True" Click="PenSizeItem_Click" />
-                                <RadioMenuFlyoutItem Text="Thick" GroupName="penSize" Tag="6"
-                                                     Click="PenSizeItem_Click" />
-                            </MenuFlyoutSubItem>
-                            <MenuFlyoutSubItem Text="Highlighter color">
-                                <RadioMenuFlyoutItem Text="Yellow" GroupName="hlColor" Tag="#FFEB3B"
-                                                     IsChecked="True" Click="HighlightColorItem_Click" />
-                                <RadioMenuFlyoutItem Text="Green" GroupName="hlColor" Tag="#66BB6A"
-                                                     Click="HighlightColorItem_Click" />
-                                <RadioMenuFlyoutItem Text="Pink" GroupName="hlColor" Tag="#F06292"
-                                                     Click="HighlightColorItem_Click" />
-                            </MenuFlyoutSubItem>
-                            <MenuFlyoutSubItem Text="Text size">
-                                <RadioMenuFlyoutItem Text="Small" GroupName="textSize" Tag="12"
-                                                     Click="TextSizeItem_Click" />
-                                <RadioMenuFlyoutItem Text="Medium" GroupName="textSize" Tag="16"
-                                                     IsChecked="True" Click="TextSizeItem_Click" />
-                                <RadioMenuFlyoutItem Text="Large" GroupName="textSize" Tag="22"
-                                                     Click="TextSizeItem_Click" />
-                            </MenuFlyoutSubItem>
-                            <MenuFlyoutSeparator />
-                            <MenuFlyoutItem Text="Replace signature image…" Click="ReplaceSignature_Click" />
-                            <MenuFlyoutItem Text="Remove saved signature" Click="RemoveSignature_Click" />
-                        </MenuFlyout>
-                    </DropDownButton.Flyout>
-                </DropDownButton>
-
-                <AppBarSeparator />
-
-                <Button x:Name="UndoButton" Click="UndoButton_Click" Padding="9" IsEnabled="False"
-                        ToolTipService.ToolTip="Undo (Ctrl+Z)">
-                    <FontIcon Glyph="&#xE7A7;" FontSize="16" />
-                </Button>
-            </StackPanel>
-
-            <!-- Center: page navigation -->
-            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
-                        HorizontalAlignment="Center" VerticalAlignment="Center">
-                <Button x:Name="PrevPageButton" Click="PrevPageButton_Click" IsEnabled="False"
-                        Padding="8" ToolTipService.ToolTip="Previous page">
-                    <FontIcon Glyph="&#xE70E;" FontSize="12" />
-                </Button>
-                <TextBox x:Name="PageBox" Width="52" IsEnabled="False"
-                         TextAlignment="Center" VerticalAlignment="Center"
-                         KeyDown="PageBox_KeyDown" />
-                <TextBlock x:Name="PageCountText" Text="/ –"
-                           VerticalAlignment="Center" Margin="4,0,0,0"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <Button x:Name="NextPageButton" Click="NextPageButton_Click" IsEnabled="False"
-                        Padding="8" ToolTipService.ToolTip="Next page">
-                    <FontIcon Glyph="&#xE70D;" FontSize="12" />
-                </Button>
-            </StackPanel>
-
-            <!-- Right: zoom controls -->
-            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-                <Button x:Name="ZoomOutButton" Click="ZoomOutButton_Click" IsEnabled="False"
-                        Padding="8" ToolTipService.ToolTip="Zoom out (Ctrl+-)">
-                    <FontIcon Glyph="&#xE71F;" FontSize="14" />
-                </Button>
-                <TextBlock x:Name="ZoomText" Text="100%" Width="48"
-                           TextAlignment="Center" VerticalAlignment="Center"
-                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
-                <Button x:Name="ZoomInButton" Click="ZoomInButton_Click" IsEnabled="False"
-                        Padding="8" ToolTipService.ToolTip="Zoom in (Ctrl++)">
-                    <FontIcon Glyph="&#xE8A3;" FontSize="14" />
-                </Button>
-                <Button x:Name="FitWidthButton" Click="FitWidthButton_Click" IsEnabled="False"
-                        Padding="8" ToolTipService.ToolTip="Fit width (Ctrl+0)">
-                    <FontIcon Glyph="&#xE9A6;" FontSize="14" />
-                </Button>
-            </StackPanel>
-        </Grid>
-
-        <!-- Document area -->
-        <Grid Grid.Row="2">
+        <!-- Document area. Fills the whole window; a top inset (set in code to
+             the chrome height) keeps content below the toolbar in normal mode,
+             and drops to zero in presentation mode. -->
+        <Grid x:Name="DocumentHost" Margin="0,88,0,0">
             <ScrollViewer x:Name="Scroller"
                           Background="{ThemeResource LayerFillColorDefaultBrush}"
                           HorizontalScrollBarVisibility="Auto"
@@ -238,7 +54,7 @@
                           SizeChanged="Scroller_SizeChanged">
                 <ItemsRepeater x:Name="PagesRepeater" Margin="24" HorizontalAlignment="Center">
                     <ItemsRepeater.Layout>
-                        <StackLayout Orientation="Vertical" Spacing="16" />
+                        <StackLayout x:Name="PagesLayout" Orientation="Vertical" Spacing="16" />
                     </ItemsRepeater.Layout>
                     <ItemsRepeater.ItemTemplate>
                         <DataTemplate>
@@ -314,6 +130,209 @@
                                HorizontalAlignment="Center" />
                 </StackPanel>
             </Border>
+        </Grid>
+
+        <!-- Chrome overlay: title bar + toolbar docked to the top. In presentation
+             mode it slides up out of view and slides back in when the cursor
+             nears the top edge. -->
+        <Grid x:Name="ChromeHost" VerticalAlignment="Top" SizeChanged="ChromeHost_SizeChanged">
+            <Grid.RenderTransform>
+                <TranslateTransform x:Name="ChromeTransform" />
+            </Grid.RenderTransform>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="40" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- Opaque backing, transparent in normal mode (Mica shows through),
+                 solid in presentation so the revealed toolbar is legible. -->
+            <Border x:Name="ChromeBackground" Grid.RowSpan="2" Background="Transparent" />
+
+            <!-- Custom title bar (draggable region) -->
+            <Grid x:Name="AppTitleBar" Grid.Row="0" Background="Transparent" Padding="16,0,0,0">
+                <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                    <FontIcon Glyph="&#xEA90;" FontSize="14"
+                              Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                    <TextBlock Text="Slate PDF"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               VerticalAlignment="Center" />
+                    <TextBlock x:Name="FileNameText"
+                               Style="{StaticResource CaptionTextBlockStyle}"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               VerticalAlignment="Center" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Toolbar -->
+            <Grid Grid.Row="1" Padding="12,4,12,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Left: file commands + annotation tools -->
+                <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="4">
+                    <Button x:Name="OpenButton" Click="OpenButton_Click" Padding="9"
+                            ToolTipService.ToolTip="Open a PDF (Ctrl+O)">
+                        <FontIcon Glyph="&#xE8E5;" FontSize="16" />
+                    </Button>
+                    <Button x:Name="SaveButton" Click="SaveButton_Click" Padding="9" IsEnabled="False"
+                            ToolTipService.ToolTip="Save an annotated copy (Ctrl+S)">
+                        <FontIcon Glyph="&#xE74E;" FontSize="16" />
+                    </Button>
+                    <Button x:Name="PrintButton" Click="PrintButton_Click" Padding="9" IsEnabled="False"
+                            ToolTipService.ToolTip="Print (Ctrl+P)">
+                        <FontIcon Glyph="&#xE749;" FontSize="16" />
+                    </Button>
+
+                    <AppBarSeparator />
+
+                    <ToggleButton x:Name="HandToolButton" Click="HandToolButton_Click" Padding="9"
+                                  IsEnabled="False" IsChecked="True"
+                                  ToolTipService.ToolTip="Pan — grab and drag the page, click to follow links (H). Esc returns here.">
+                        <FontIcon Glyph="&#xE7C9;" FontSize="16" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="SelectToolButton" Click="SelectToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Select / scroll">
+                        <FontIcon Glyph="&#xE8B0;" FontSize="16" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="TextSelectToolButton" Click="TextSelectToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Select text — Ctrl+C copies it, or switch to the highlighter to highlight it">
+                        <!-- Segoe Fluent has no I-beam glyph, so draw one. -->
+                        <PathIcon Width="16" Height="16"
+                                  Data="M5,0 L11,0 L11,1.5 L8.75,1.5 L8.75,14.5 L11,14.5 L11,16 L5,16 L5,14.5 L7.25,14.5 L7.25,1.5 L5,1.5 Z" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="DrawToolButton" Click="DrawToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Draw with the pen">
+                        <FontIcon Glyph="&#xE70F;" FontSize="16" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="HighlightToolButton" Click="HighlightToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Highlight text (drag across text)">
+                        <FontIcon Glyph="&#xE7E6;" FontSize="16" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="TextToolButton" Click="TextToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Add text (click a spot, type, click away)">
+                        <FontIcon Glyph="&#xE8D2;" FontSize="16" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="CommentToolButton" Click="CommentToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Add a comment note (click a spot)">
+                        <FontIcon Glyph="&#xE90A;" FontSize="16" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="SignatureToolButton" Click="SignatureToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Place your signature (click a spot; drag corner to resize)">
+                        <FontIcon Glyph="&#xE76D;" FontSize="16" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="EraseToolButton" Click="EraseToolButton_Click" Padding="9"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Erase an annotation (click it)">
+                        <FontIcon Glyph="&#xED60;" FontSize="16" />
+                    </ToggleButton>
+
+                    <DropDownButton x:Name="ColorsButton" Padding="9" IsEnabled="False"
+                                    ToolTipService.ToolTip="Pen and highlighter options">
+                        <FontIcon Glyph="&#xE790;" FontSize="16" />
+                        <DropDownButton.Flyout>
+                            <MenuFlyout>
+                                <MenuFlyoutSubItem Text="Pen color">
+                                    <RadioMenuFlyoutItem Text="Red" GroupName="penColor" Tag="#E53935"
+                                                         IsChecked="True" Click="PenColorItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Blue" GroupName="penColor" Tag="#1E88E5"
+                                                         Click="PenColorItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Green" GroupName="penColor" Tag="#43A047"
+                                                         Click="PenColorItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Black" GroupName="penColor" Tag="#000000"
+                                                         Click="PenColorItem_Click" />
+                                </MenuFlyoutSubItem>
+                                <MenuFlyoutSubItem Text="Pen size">
+                                    <RadioMenuFlyoutItem Text="Thin" GroupName="penSize" Tag="1.5"
+                                                         Click="PenSizeItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Medium" GroupName="penSize" Tag="3"
+                                                         IsChecked="True" Click="PenSizeItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Thick" GroupName="penSize" Tag="6"
+                                                         Click="PenSizeItem_Click" />
+                                </MenuFlyoutSubItem>
+                                <MenuFlyoutSubItem Text="Highlighter color">
+                                    <RadioMenuFlyoutItem Text="Yellow" GroupName="hlColor" Tag="#FFEB3B"
+                                                         IsChecked="True" Click="HighlightColorItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Green" GroupName="hlColor" Tag="#66BB6A"
+                                                         Click="HighlightColorItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Pink" GroupName="hlColor" Tag="#F06292"
+                                                         Click="HighlightColorItem_Click" />
+                                </MenuFlyoutSubItem>
+                                <MenuFlyoutSubItem Text="Text size">
+                                    <RadioMenuFlyoutItem Text="Small" GroupName="textSize" Tag="12"
+                                                         Click="TextSizeItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Medium" GroupName="textSize" Tag="16"
+                                                         IsChecked="True" Click="TextSizeItem_Click" />
+                                    <RadioMenuFlyoutItem Text="Large" GroupName="textSize" Tag="22"
+                                                         Click="TextSizeItem_Click" />
+                                </MenuFlyoutSubItem>
+                                <MenuFlyoutSeparator />
+                                <MenuFlyoutItem Text="Replace signature image…" Click="ReplaceSignature_Click" />
+                                <MenuFlyoutItem Text="Remove saved signature" Click="RemoveSignature_Click" />
+                            </MenuFlyout>
+                        </DropDownButton.Flyout>
+                    </DropDownButton>
+
+                    <AppBarSeparator />
+
+                    <Button x:Name="UndoButton" Click="UndoButton_Click" Padding="9" IsEnabled="False"
+                            ToolTipService.ToolTip="Undo (Ctrl+Z)">
+                        <FontIcon Glyph="&#xE7A7;" FontSize="16" />
+                    </Button>
+                </StackPanel>
+
+                <!-- Center: page navigation -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
+                            HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Button x:Name="PrevPageButton" Click="PrevPageButton_Click" IsEnabled="False"
+                            Padding="8" ToolTipService.ToolTip="Previous page">
+                        <FontIcon Glyph="&#xE70E;" FontSize="12" />
+                    </Button>
+                    <TextBox x:Name="PageBox" Width="52" IsEnabled="False"
+                             TextAlignment="Center" VerticalAlignment="Center"
+                             KeyDown="PageBox_KeyDown" />
+                    <TextBlock x:Name="PageCountText" Text="/ –"
+                               VerticalAlignment="Center" Margin="4,0,0,0"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <Button x:Name="NextPageButton" Click="NextPageButton_Click" IsEnabled="False"
+                            Padding="8" ToolTipService.ToolTip="Next page">
+                        <FontIcon Glyph="&#xE70D;" FontSize="12" />
+                    </Button>
+                </StackPanel>
+
+                <!-- Right: zoom + present -->
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                    <Button x:Name="ZoomOutButton" Click="ZoomOutButton_Click" IsEnabled="False"
+                            Padding="8" ToolTipService.ToolTip="Zoom out (Ctrl+-)">
+                        <FontIcon Glyph="&#xE71F;" FontSize="14" />
+                    </Button>
+                    <TextBlock x:Name="ZoomText" Text="100%" Width="48"
+                               TextAlignment="Center" VerticalAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <Button x:Name="ZoomInButton" Click="ZoomInButton_Click" IsEnabled="False"
+                            Padding="8" ToolTipService.ToolTip="Zoom in (Ctrl++)">
+                        <FontIcon Glyph="&#xE8A3;" FontSize="14" />
+                    </Button>
+                    <Button x:Name="FitWidthButton" Click="FitWidthButton_Click" IsEnabled="False"
+                            Padding="8" ToolTipService.ToolTip="Fit width (Ctrl+0)">
+                        <FontIcon Glyph="&#xE9A6;" FontSize="14" />
+                    </Button>
+                    <AppBarSeparator />
+                    <Button x:Name="PresentButton" Click="PresentButton_Click" IsEnabled="False"
+                            Padding="8" ToolTipService.ToolTip="Present full screen (F5; Esc to exit)">
+                        <FontIcon Glyph="&#xE740;" FontSize="14" />
+                    </Button>
+                </StackPanel>
+            </Grid>
         </Grid>
     </Grid>
 </Window>
