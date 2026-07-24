@@ -910,8 +910,9 @@ public sealed partial class MainWindow : Window
     {
         if (_presenting)
         {
-            ApplyFitPage();
-            StartPresentationSettle(); // verify until stable at the new size
+            // Re-arm the verification loop on every size change, including one
+            // that arrives after a previous run finished.
+            StartPresentationSettle();
         }
         else if (_fitWidthMode)
         {
@@ -986,20 +987,24 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Runs a short verify-and-correct loop after entering presentation or a
-    /// size change: every tick it checks that the zoom matches a whole-slide
-    /// fit for the CURRENT viewport and that the current slide is centered,
-    /// reapplying the fit when not. Stops after two consecutive stable ticks
-    /// (or a bounded maximum). This converges regardless of event timing —
-    /// geometry changes that don't move the scroll offset fire no events at
-    /// all, which is how the view previously got stuck half-fitted.
+    /// Runs a verify-and-correct loop after entering presentation or a size
+    /// change: every tick it checks that the scroll viewport agrees with the
+    /// window's real client size, that the zoom is a whole-slide fit, and that
+    /// the current slide is centered — reapplying the fit when not.
+    ///
+    /// Checking against the WINDOW size matters: the viewport can still report
+    /// its pre-full-screen height for a while, and a fit computed from that
+    /// stale value is self-consistent (a stale expectation matches the stale
+    /// zoom it produced), so the loop used to declare victory on a view that
+    /// was sized for the old window — the slide ended up ~75% tall and flush
+    /// to the top instead of centered.
     /// </summary>
     private void StartPresentationSettle()
     {
         if (_settleTimer is null)
         {
             _settleTimer = DispatcherQueue.CreateTimer();
-            _settleTimer.Interval = TimeSpan.FromMilliseconds(150);
+            _settleTimer.Interval = TimeSpan.FromMilliseconds(100);
             _settleTimer.IsRepeating = true;
             _settleTimer.Tick += (_, _) => SettleTick();
         }
@@ -1024,21 +1029,38 @@ public sealed partial class MainWindow : Window
 
         if (vw > 0 && vh > 0 && pw > 0 && ph > 0)
         {
+            // The window's client size in DIPs — the authority the viewport
+            // must converge to before any fit computed from it can be trusted.
+            double scale = Root.XamlRoot?.RasterizationScale ?? 1.0;
+            double windowWidth = AppWindow.ClientSize.Width / scale;
+            double windowHeight = AppWindow.ClientSize.Height / scale;
+            bool viewportMatchesWindow =
+                windowWidth <= 0 || windowHeight <= 0 ||
+                (Math.Abs(vw - windowWidth) <= 2 && Math.Abs(vh - windowHeight) <= 2);
+
             double wantedZoom = Math.Clamp(
                 Math.Min((vw - 24) / pw, (vh - 24) / ph), MinZoom, MaxZoom);
             double target = Math.Clamp(
                 ScrollTargetFor(_currentPage), 0, Scroller.ScrollableHeight);
 
-            stable = Math.Abs(wantedZoom - _doc.Zoom) < 0.001 &&
+            stable = viewportMatchesWindow &&
+                     Math.Abs(wantedZoom - _doc.Zoom) < 0.001 &&
                      Math.Abs(target - Scroller.VerticalOffset) <= 1;
-            if (!stable)
+
+            // Only re-fit once the viewport is trustworthy; fitting against a
+            // stale viewport is what bakes in the wrong zoom.
+            if (!stable && viewportMatchesWindow)
             {
                 ApplyFitPage();
             }
         }
 
+        _settleTicks++;
         _settleStableTicks = stable ? _settleStableTicks + 1 : 0;
-        if (_settleStableTicks >= 2 || ++_settleTicks > 20)
+
+        // Keep watching for at least ~1s so a late-arriving resize can't slip
+        // in after the loop has stopped; hard cap ~5s.
+        if ((_settleStableTicks >= 3 && _settleTicks >= 10) || _settleTicks > 50)
         {
             _settleTimer?.Stop();
         }
