@@ -585,16 +585,18 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // While presenting, any stray scroll (e.g. a touchpad nudge) snaps back
-        // to the nearest whole slide so a partial slide is never left on screen.
+        // While presenting, the current page is AUTHORITATIVE — it only ever
+        // changes through explicit navigation (keys/wheel/goto). Any settle
+        // that isn't centered on it (stray scroll, mid-transition geometry)
+        // gets corrected back toward that page. Never re-derive the page from
+        // the offset here: transitional offsets during the full-screen switch
+        // used to latch the wrong page and made drift unrecoverable.
         if (_presenting)
         {
-            int nearest = NearestPresentationPage();
-            _currentPage = nearest;
-            PageBox.Text = nearest.ToString();
-            if (Math.Abs(ScrollTargetFor(nearest) - Scroller.VerticalOffset) > 1)
+            double target = Math.Clamp(ScrollTargetFor(_currentPage), 0, Scroller.ScrollableHeight);
+            if (Math.Abs(target - Scroller.VerticalOffset) > 1)
             {
-                JumpToPage(nearest);
+                Scroller.ChangeView(null, target, null, disableAnimation: true);
             }
 
             return;
@@ -623,29 +625,6 @@ public sealed partial class MainWindow : Window
                 PageBox.Text = page.ToString();
             }
         }
-    }
-
-    /// <summary>The slide whose centered target is closest to the current offset.</summary>
-    private int NearestPresentationPage()
-    {
-        if (_doc is null || _doc.Pages.Count == 0)
-        {
-            return 1;
-        }
-
-        int best = 1;
-        double bestDistance = double.MaxValue;
-        for (int p = 1; p <= _doc.Pages.Count; p++)
-        {
-            double distance = Math.Abs(ScrollTargetFor(p) - Scroller.VerticalOffset);
-            if (distance < bestDistance)
-            {
-                bestDistance = distance;
-                best = p;
-            }
-        }
-
-        return best;
     }
 
     /// <summary>Scroll offset of the top of a 1-based page.</summary>
@@ -964,6 +943,12 @@ public sealed partial class MainWindow : Window
         {
             return;
         }
+
+        // Lock in the slide to present BEFORE any geometry changes, judged by
+        // what dominates the viewport (its center), not the top edge — so
+        // being "between slides" picks the one you're actually looking at.
+        _currentPage = TopPageAt(Scroller.VerticalOffset + Scroller.ViewportHeight / 2);
+        PageBox.Text = _currentPage.ToString();
 
         _presenting = true;
         AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
