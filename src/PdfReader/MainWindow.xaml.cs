@@ -600,12 +600,7 @@ public sealed partial class MainWindow : Window
         // used to latch the wrong page and made drift unrecoverable.
         if (_presenting)
         {
-            double target = Math.Clamp(ScrollTargetFor(_currentPage), 0, Scroller.ScrollableHeight);
-            if (Math.Abs(target - Scroller.VerticalOffset) > 1)
-            {
-                Scroller.ChangeView(null, target, null, disableAnimation: true);
-            }
-
+            CorrectPresentationOffset();
             return;
         }
 
@@ -632,6 +627,68 @@ public sealed partial class MainWindow : Window
                 PageBox.Text = page.ToString();
             }
         }
+    }
+
+    /// <summary>
+    /// How far the page's REAL rendered position is from where it should sit
+    /// (centered while presenting, at the viewport top otherwise), in DIPs.
+    /// Null when the page isn't realized.
+    ///
+    /// Measuring beats arithmetic here: the pages live in a virtualizing
+    /// ItemsRepeater whose realized geometry doesn't always match a
+    /// sum-of-heights calculation — particularly right after a zoom change —
+    /// so computed scroll targets could land between slides and the error
+    /// compounded as you stepped through the deck.
+    /// </summary>
+    private double? MeasuredPageOffsetError(int pageNumber)
+    {
+        if (_doc is null ||
+            pageNumber < 1 || pageNumber > _doc.Pages.Count ||
+            PagesRepeater.TryGetElement(pageNumber - 1) is not FrameworkElement element ||
+            element.ActualHeight <= 0)
+        {
+            return null;
+        }
+
+        try
+        {
+            double y = element.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
+            double desired = _presenting
+                ? Math.Max(0, (Scroller.ViewportHeight - element.ActualHeight) / 2)
+                : 0;
+            return y - desired;
+        }
+        catch
+        {
+            return null; // element detached mid-measure
+        }
+    }
+
+    /// <summary>
+    /// Nudges the scroll so the current slide sits exactly where it belongs,
+    /// using its measured position. Returns true when the view is already
+    /// correct (or is clamped at an end of the document and can't get closer).
+    /// </summary>
+    private bool CorrectPresentationOffset(bool animate = false)
+    {
+        if (MeasuredPageOffsetError(_currentPage) is not double error)
+        {
+            return false;
+        }
+
+        if (Math.Abs(error) <= 1)
+        {
+            return true;
+        }
+
+        double target = Math.Clamp(Scroller.VerticalOffset + error, 0, Scroller.ScrollableHeight);
+        if (Math.Abs(target - Scroller.VerticalOffset) <= 0.5)
+        {
+            return true; // already clamped at an end; this is as close as it gets
+        }
+
+        Scroller.ChangeView(null, target, null, disableAnimation: !animate);
+        return false;
     }
 
     /// <summary>Scroll offset of the top of a 1-based page.</summary>
@@ -695,9 +752,36 @@ public sealed partial class MainWindow : Window
 
         pageNumber = Math.Clamp(pageNumber, 1, _doc.Pages.Count);
         _commandedPage = pageNumber;
-        Scroller.ChangeView(null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
+
+        // If the page is already realized, position it by measurement —
+        // exact regardless of what the arithmetic would have said.
+        if (MeasuredPageOffsetError(pageNumber) is double error)
+        {
+            if (Math.Abs(error) > 1)
+            {
+                double measured = Math.Clamp(
+                    Scroller.VerticalOffset + error, 0, Scroller.ScrollableHeight);
+                Scroller.ChangeView(null, measured, null, disableAnimation: !animate);
+            }
+
+            return;
+        }
+
+        // Not realized yet (a distant jump): use the arithmetic estimate to get
+        // close — which realizes the page — then correct by measurement once
+        // layout has caught up.
+        Scroller.ChangeView(null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
+        DispatcherQueue.TryEnqueue(
+            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
+            () =>
+            {
+                if (_doc is not null && _currentPage == pageNumber)
+                {
+                    CorrectPresentationOffset();
+                }
+            });
     }
 
     // ---------------------------------------------------------------- link navigation
@@ -893,7 +977,7 @@ public sealed partial class MainWindow : Window
         ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
 
         Root.UpdateLayout();
-        JumpToPage(_currentPage); // recenters via ScrollTargetFor
+        JumpToPage(_currentPage); // repositions by measurement once realized
     }
 
     private void ZoomInButton_Click(object sender, RoutedEventArgs e) => StepZoom(+1);
@@ -1040,18 +1124,19 @@ public sealed partial class MainWindow : Window
 
             double wantedZoom = Math.Clamp(
                 Math.Min((vw - 24) / pw, (vh - 24) / ph), MinZoom, MaxZoom);
-            double target = Math.Clamp(
-                ScrollTargetFor(_currentPage), 0, Scroller.ScrollableHeight);
+            bool zoomOk = Math.Abs(wantedZoom - _doc.Zoom) < 0.001;
 
-            stable = viewportMatchesWindow &&
-                     Math.Abs(wantedZoom - _doc.Zoom) < 0.001 &&
-                     Math.Abs(target - Scroller.VerticalOffset) <= 1;
-
-            // Only re-fit once the viewport is trustworthy; fitting against a
-            // stale viewport is what bakes in the wrong zoom.
-            if (!stable && viewportMatchesWindow)
+            if (viewportMatchesWindow && !zoomOk)
             {
+                // Only re-fit once the viewport is trustworthy; fitting against
+                // a stale viewport is what bakes in the wrong zoom.
                 ApplyFitPage();
+            }
+            else if (viewportMatchesWindow)
+            {
+                // Zoom is right — verify the slide's MEASURED position and
+                // nudge it, rather than trusting computed page offsets.
+                stable = CorrectPresentationOffset();
             }
         }
 
