@@ -709,12 +709,31 @@ public sealed partial class MainWindow : Window
     /// so computed scroll targets could land between slides and the error
     /// compounded as you stepped through the deck.
     /// </summary>
-    private double? MeasuredPageOffsetError(int pageNumber)
+    private double? MeasuredPageOffsetError(int pageNumber, bool realize = false)
     {
-        if (_doc is null ||
-            pageNumber < 1 || pageNumber > _doc.Pages.Count ||
-            PagesRepeater.TryGetElement(pageNumber - 1) is not FrameworkElement element ||
-            element.ActualHeight <= 0)
+        if (_doc is null || pageNumber < 1 || pageNumber > _doc.Pages.Count)
+        {
+            return null;
+        }
+
+        var element = PagesRepeater.TryGetElement(pageNumber - 1) as FrameworkElement;
+        if (element is null && realize)
+        {
+            // Force the virtualizing repeater to materialize the target page so
+            // it can be measured at all. Without this, a far-off page reports
+            // "unmeasurable" exactly when an accurate jump matters most.
+            try
+            {
+                element = PagesRepeater.GetOrCreateElement(pageNumber - 1) as FrameworkElement;
+                element?.UpdateLayout();
+            }
+            catch
+            {
+                element = null;
+            }
+        }
+
+        if (element is null || element.ActualHeight <= 0)
         {
             return null;
         }
@@ -734,14 +753,29 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Nudges the scroll so the current slide sits exactly where it belongs,
-    /// using its measured position. Returns true when the view is already
-    /// correct (or is clamped at an end of the document and can't get closer).
+    /// Nudges the scroll so a slide sits exactly where it belongs, using its
+    /// measured position. Returns true when the view is already correct (or is
+    /// clamped at an end of the document and can't get closer).
+    ///
+    /// When the page can't be measured even after forcing realization, this
+    /// re-issues the arithmetic estimate rather than giving up: each attempt
+    /// renders pages nearer the target, which refreshes the repeater's size
+    /// estimate, so repeated calls converge. "Can't measure" must mean "try
+    /// again" — treating it as "nothing to do" is what stranded long jumps
+    /// (e.g. exiting on slide 20 and landing on 12).
     /// </summary>
-    private bool CorrectPresentationOffset(bool animate = false)
+    private bool CorrectPageOffset(int pageNumber, bool animate = false)
     {
-        if (MeasuredPageOffsetError(_currentPage) is not double error)
+        if (_doc is null || pageNumber < 1 || pageNumber > _doc.Pages.Count)
         {
+            return false;
+        }
+
+        if (MeasuredPageOffsetError(pageNumber, realize: true) is not double error)
+        {
+            // Unmeasurable: fall back to the estimate to get closer.
+            Scroller.ChangeView(
+                null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
             return false;
         }
 
@@ -759,6 +793,9 @@ public sealed partial class MainWindow : Window
         Scroller.ChangeView(null, target, null, disableAnimation: !animate);
         return false;
     }
+
+    private bool CorrectPresentationOffset(bool animate = false) =>
+        CorrectPageOffset(_currentPage, animate);
 
     /// <summary>Scroll offset of the top of a 1-based page.</summary>
     private double PageTop(int pageNumber)
@@ -824,33 +861,41 @@ public sealed partial class MainWindow : Window
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
 
-        // If the page is already realized, position it by measurement —
-        // exact regardless of what the arithmetic would have said.
-        if (MeasuredPageOffsetError(pageNumber) is double error)
+        // Position by measurement (realizing the page if needed). If it still
+        // can't be measured, this falls back to the estimate to get closer.
+        if (CorrectPageOffset(pageNumber, animate))
         {
-            if (Math.Abs(error) > 1)
-            {
-                double measured = Math.Clamp(
-                    Scroller.VerticalOffset + error, 0, Scroller.ScrollableHeight);
-                Scroller.ChangeView(null, measured, null, disableAnimation: !animate);
-            }
-
             return;
         }
 
-        // Not realized yet (a distant jump): use the arithmetic estimate to get
-        // close — which realizes the page — then correct by measurement once
-        // layout has caught up.
-        Scroller.ChangeView(null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
+        // Verify once layout has caught up — and keep verifying, since a long
+        // jump may need a couple of passes for the size estimate to settle.
         DispatcherQueue.TryEnqueue(
             Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
             () =>
             {
-                if (_doc is not null && _currentPage == pageNumber)
+                if (_doc is null || _currentPage != pageNumber)
                 {
-                    CorrectPresentationOffset();
+                    return;
+                }
+
+                if (!CorrectPageOffset(pageNumber) && !_presenting && _exitTargetPage < 0)
+                {
+                    StartPageSettle(pageNumber);
                 }
             });
+    }
+
+    /// <summary>
+    /// Converges a windowed jump onto a page over a few frames. Long jumps land
+    /// short because the repeater's extent estimate still reflects the old item
+    /// sizes; each correction realizes pages nearer the target and refines it.
+    /// Cancelled by any user input.
+    /// </summary>
+    private void StartPageSettle(int pageNumber)
+    {
+        _exitTargetPage = pageNumber; // reuses the exit-restore machinery
+        StartPresentationSettle();
     }
 
     // ---------------------------------------------------------------- link navigation
@@ -1313,22 +1358,12 @@ public sealed partial class MainWindow : Window
                 {
                     ApplyFitWidth();
                 }
-                else if (MeasuredPageOffsetError(_exitTargetPage) is double error)
+                else
                 {
-                    if (Math.Abs(error) <= 1)
-                    {
-                        stable = true;
-                    }
-                    else
-                    {
-                        double target = Math.Clamp(
-                            Scroller.VerticalOffset + error, 0, Scroller.ScrollableHeight);
-                        stable = Math.Abs(target - Scroller.VerticalOffset) <= 0.5;
-                        if (!stable)
-                        {
-                            Scroller.ChangeView(null, target, null, disableAnimation: true);
-                        }
-                    }
+                    // Realizes the target if needed, and re-issues the estimate
+                    // when it still can't be measured — so a far-off page keeps
+                    // converging instead of the loop idling until it times out.
+                    stable = CorrectPageOffset(_exitTargetPage);
                 }
             }
         }
