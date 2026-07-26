@@ -709,31 +709,19 @@ public sealed partial class MainWindow : Window
     /// so computed scroll targets could land between slides and the error
     /// compounded as you stepped through the deck.
     /// </summary>
-    private double? MeasuredPageOffsetError(int pageNumber, bool realize = false)
+    private double? MeasuredPageOffsetError(int pageNumber)
     {
         if (_doc is null || pageNumber < 1 || pageNumber > _doc.Pages.Count)
         {
             return null;
         }
 
-        var element = PagesRepeater.TryGetElement(pageNumber - 1) as FrameworkElement;
-        if (element is null && realize)
-        {
-            // Force the virtualizing repeater to materialize the target page so
-            // it can be measured at all. Without this, a far-off page reports
-            // "unmeasurable" exactly when an accurate jump matters most.
-            try
-            {
-                element = PagesRepeater.GetOrCreateElement(pageNumber - 1) as FrameworkElement;
-                element?.UpdateLayout();
-            }
-            catch
-            {
-                element = null;
-            }
-        }
-
-        if (element is null || element.ActualHeight <= 0)
+        // Only ever read what the repeater has already realized. Forcing
+        // realization (GetOrCreateElement) pins elements outside the recycling
+        // flow and corrupts its bookkeeping — pages then never get their render
+        // pass and show as blank grey cards.
+        if (PagesRepeater.TryGetElement(pageNumber - 1) is not FrameworkElement element ||
+            element.ActualHeight <= 0)
         {
             return null;
         }
@@ -753,16 +741,61 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Nudges the scroll so a slide sits exactly where it belongs, using its
-    /// measured position. Returns true when the view is already correct (or is
-    /// clamped at an end of the document and can't get closer).
+    /// Scroll delta that would bring a page to where it belongs, derived from
+    /// the nearest REALIZED page: measure where that page actually sits, then
+    /// walk the known page heights across to the target.
     ///
-    /// When the page can't be measured even after forcing realization, this
-    /// re-issues the arithmetic estimate rather than giving up: each attempt
-    /// renders pages nearer the target, which refreshes the repeater's size
-    /// estimate, so repeated calls converge. "Can't measure" must mean "try
-    /// again" — treating it as "nothing to do" is what stranded long jumps
-    /// (e.g. exiting on slide 20 and landing on 12).
+    /// This keeps distant jumps honest without materializing anything. The raw
+    /// sum-from-the-top estimate is interpreted by the repeater against its
+    /// stale per-item sizes, which is how exiting on slide 20 landed on 12;
+    /// anchoring to a measured page removes that error, and any residue is
+    /// mopped up by a second pass once more pages are realized.
+    /// </summary>
+    private double? EstimatedScrollDelta(int pageNumber)
+    {
+        if (_doc is null || pageNumber < 1 || pageNumber > _doc.Pages.Count)
+        {
+            return null;
+        }
+
+        // Nearest realized page to anchor on.
+        int anchor = -1;
+        for (int distance = 0; distance < _doc.Pages.Count; distance++)
+        {
+            foreach (int candidate in new[] { pageNumber - distance, pageNumber + distance })
+            {
+                if (candidate >= 1 && candidate <= _doc.Pages.Count &&
+                    PagesRepeater.TryGetElement(candidate - 1) is FrameworkElement { ActualHeight: > 0 })
+                {
+                    anchor = candidate;
+                    break;
+                }
+            }
+
+            if (anchor > 0)
+            {
+                break;
+            }
+        }
+
+        if (anchor < 0 || MeasuredPageOffsetError(anchor) is not double anchorError)
+        {
+            return null;
+        }
+
+        // Distance from the anchor to the target across the intervening pages.
+        double span = 0;
+        for (int p = Math.Min(anchor, pageNumber); p < Math.Max(anchor, pageNumber); p++)
+        {
+            span += _doc.Pages[p - 1].DisplayHeight + LayoutSpacing;
+        }
+
+        return anchorError + (pageNumber > anchor ? span : -span);
+    }
+
+    /// <summary>
+    /// Nudges the scroll so a slide sits where it belongs. Returns true when the
+    /// view is already correct (or is clamped at an end and can't get closer).
     /// </summary>
     private bool CorrectPageOffset(int pageNumber, bool animate = false)
     {
@@ -771,9 +804,12 @@ public sealed partial class MainWindow : Window
             return false;
         }
 
-        if (MeasuredPageOffsetError(pageNumber, realize: true) is not double error)
+        // Prefer the target's own measurement; otherwise anchor on the nearest
+        // realized page; only fall back to the from-the-top sum if nothing at
+        // all is realized (e.g. the document was just opened).
+        double? delta = MeasuredPageOffsetError(pageNumber) ?? EstimatedScrollDelta(pageNumber);
+        if (delta is not double error)
         {
-            // Unmeasurable: fall back to the estimate to get closer.
             Scroller.ChangeView(
                 null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
             return false;
@@ -856,46 +892,54 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        pageNumber = Math.Clamp(pageNumber, 1, _doc.Pages.Count);
+        bool targetWasRealized =
+            PagesRepeater.TryGetElement(pageNumber - 1) is FrameworkElement { ActualHeight: > 0 };
+
         _commandedPage = pageNumber;
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
 
-        // Position by measurement (realizing the page if needed). If it still
-        // can't be measured, this falls back to the estimate to get closer.
-        if (CorrectPageOffset(pageNumber, animate))
+        bool done = CorrectPageOffset(pageNumber, animate);
+
+        // A neighbouring slide (Page Up/Down, wheel, arrows) is already on
+        // screen: one measured move lands it, and adding follow-up passes only
+        // produced the visible rattle. Converge only for jumps that started
+        // with the target off-screen.
+        if (done || targetWasRealized)
         {
             return;
         }
 
-        // Verify once layout has caught up — and keep verifying, since a long
-        // jump may need a couple of passes for the size estimate to settle.
+        ScheduleJumpConvergence(pageNumber, passesLeft: 2);
+    }
+
+    /// <summary>
+    /// Finishes a long jump over the next frame or two: after the scroll has
+    /// been applied, more pages near the target are realized, so a re-measured
+    /// correction lands accurately. Bounded, and abandoned if the user takes
+    /// over or navigates elsewhere.
+    /// </summary>
+    private void ScheduleJumpConvergence(int pageNumber, int passesLeft)
+    {
+        if (passesLeft <= 0)
+        {
+            return;
+        }
+
         DispatcherQueue.TryEnqueue(
             Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
             () =>
             {
-                if (_doc is null || _currentPage != pageNumber)
+                if (_doc is null || _currentPage != pageNumber || _commandedPage != pageNumber)
                 {
-                    return;
+                    return; // superseded by newer navigation or user input
                 }
 
-                if (!CorrectPageOffset(pageNumber) && !_presenting && _exitTargetPage < 0)
+                if (!CorrectPageOffset(pageNumber))
                 {
-                    StartPageSettle(pageNumber);
+                    ScheduleJumpConvergence(pageNumber, passesLeft - 1);
                 }
             });
-    }
-
-    /// <summary>
-    /// Converges a windowed jump onto a page over a few frames. Long jumps land
-    /// short because the repeater's extent estimate still reflects the old item
-    /// sizes; each correction realizes pages nearer the target and refines it.
-    /// Cancelled by any user input.
-    /// </summary>
-    private void StartPageSettle(int pageNumber)
-    {
-        _exitTargetPage = pageNumber; // reuses the exit-restore machinery
-        StartPresentationSettle();
     }
 
     // ---------------------------------------------------------------- link navigation
@@ -1384,6 +1428,10 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void EndExitRestore()
     {
+        // Also drops any in-flight jump convergence: its passes bail out when
+        // the commanded page no longer matches.
+        _commandedPage = -1;
+
         if (_exitTargetPage < 0)
         {
             return;
