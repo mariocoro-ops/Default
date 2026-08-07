@@ -1345,11 +1345,14 @@ public sealed class AnnotationCanvas : Canvas
         // overlay non-interactive (e.g. a note added by shortcut in select mode).
         IsHitTestVisible = true;
 
+        // AcceptsReturn MUST be set before Text: a TextBox is single-line until
+        // told otherwise, and assigning multi-line text to a single-line box
+        // truncates it at the first line break. Loading a saved multi-line note
+        // used to lose every line but the first, which was then committed back.
         var editor = new TextBox
         {
-            Text = annotation.Text,
-            FontSize = annotation.FontSize,
             AcceptsReturn = true,
+            FontSize = annotation.FontSize,
             Foreground = new SolidColorBrush(annotation.Color),
             // The app is dark-themed but the editor floats on the light page.
             RequestedTheme = ElementTheme.Light,
@@ -1376,6 +1379,8 @@ public sealed class AnnotationCanvas : Canvas
             SetLeft(editor, annotation.Position.X - 10);
             SetTop(editor, annotation.Position.Y - 6);
         }
+
+        editor.Text = annotation.Text; // now that the box is multi-line
 
         _activeEditor = editor;
         _activeEditor.LostFocus += (_, _) => CloseActiveEditor(commit: true);
@@ -1507,15 +1512,16 @@ public sealed class AnnotationCanvas : Canvas
         }
 
         var page = Page;
+        // As above: multi-line before Text, or existing lines are truncated.
         var box = new TextBox
         {
-            Text = annotation.Text,
             AcceptsReturn = true,
             TextWrapping = TextWrapping.Wrap,
             Width = 260,
             Height = 110,
             PlaceholderText = "Write a comment…",
         };
+        box.Text = annotation.Text;
 
         var deleteButton = new Button { Content = "Delete comment" };
         var panel = new StackPanel { Spacing = 8 };
