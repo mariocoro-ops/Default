@@ -71,6 +71,10 @@ public sealed partial class MainWindow : Window
     private int _exitTargetPage = -1;
 
 
+    // Find-in-document (Ctrl+F).
+    private CancellationTokenSource? _searchCts;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _searchDebounce;
+
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gotoTimer;
@@ -118,6 +122,14 @@ public sealed partial class MainWindow : Window
 
             // Overlays are laid out at 100%-zoom size and scaled by Zoom.
             container.Children.Add(new Controls.LinkLayer
+            {
+                Page = page,
+                Width = page.BaseWidth,
+                Height = page.BaseHeight,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+            });
+            container.Children.Add(new Controls.SearchLayer
             {
                 Page = page,
                 Width = page.BaseWidth,
@@ -174,6 +186,9 @@ public sealed partial class MainWindow : Window
                 {
                     case Controls.LinkLayer links:
                         links.Zoom = page.Zoom;
+                        break;
+                    case Controls.SearchLayer search:
+                        search.Zoom = page.Zoom;
                         break;
                     case Controls.AnnotationCanvas annotations:
                         annotations.Zoom = page.Zoom;
@@ -308,6 +323,13 @@ public sealed partial class MainWindow : Window
         _undoStack.Clear();
         _isModified = false;
         ClearGoto();
+
+        // Results belong to the previous document.
+        _searchCts?.Cancel();
+        _searchDebounce?.Stop();
+        FindBar.Visibility = Visibility.Collapsed;
+        FindStatus.Text = string.Empty;
+        SearchState.Current.Clear();
         SetTool(AnnotationTool.Hand); // hand/pan is the default reading tool
 
         BuildPages(doc);
@@ -1584,8 +1606,15 @@ public sealed partial class MainWindow : Window
 
     private void EscapeAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
-        // Esc first cancels a half-typed slide number, then falls back to the
-        // hand tool (the default), so it's always a "get me back" key.
+        // Esc backs out one level at a time: close the find bar, cancel a
+        // half-typed slide number, return to the hand tool, leave presentation.
+        if (FindBar.Visibility == Visibility.Visible)
+        {
+            CloseFind();
+            args.Handled = true;
+            return;
+        }
+
         if (_gotoBuffer.Length > 0)
         {
             ClearGoto();
@@ -1636,6 +1665,222 @@ public sealed partial class MainWindow : Window
 
         args.Handled = true;
         ToolState.Current.RequestAddNote((uint)(_currentPage - 1), _lastPointerInRoot);
+    }
+
+    // ---------------------------------------------------------------- find in document
+
+    private void FindAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    {
+        if (_doc is null)
+        {
+            args.Handled = false;
+            return;
+        }
+
+        args.Handled = true;
+        FindBar.Visibility = Visibility.Visible;
+        FindBox.Focus(FocusState.Programmatic);
+        FindBox.SelectAll();
+
+        if (!string.IsNullOrEmpty(FindBox.Text))
+        {
+            RunSearch(); // re-run so results match the current document
+        }
+    }
+
+    private void FindClose_Click(object sender, RoutedEventArgs e) => CloseFind();
+
+    private void CloseFind()
+    {
+        _searchCts?.Cancel();
+        _searchDebounce?.Stop();
+        FindBar.Visibility = Visibility.Collapsed;
+        FindStatus.Text = string.Empty;
+        SearchState.Current.Clear();
+        Scroller.Focus(FocusState.Programmatic);
+    }
+
+    private void FindBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        // Debounce so every keystroke doesn't kick off a document scan.
+        if (_searchDebounce is null)
+        {
+            _searchDebounce = DispatcherQueue.CreateTimer();
+            _searchDebounce.Interval = TimeSpan.FromMilliseconds(220);
+            _searchDebounce.IsRepeating = false;
+            _searchDebounce.Tick += (_, _) => RunSearch();
+        }
+
+        _searchDebounce.Stop();
+        _searchDebounce.Start();
+    }
+
+    private void FindOption_Click(object sender, RoutedEventArgs e) => RunSearch();
+
+    private void FindBox_KeyDown(object sender, KeyRoutedEventArgs e)
+    {
+        if (e.Key != VirtualKey.Enter)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        bool shift = InputKeyboardSource
+            .GetKeyStateForCurrentThread(VirtualKey.Shift)
+            .HasFlag(CoreVirtualKeyStates.Down);
+        StepMatch(shift ? -1 : +1);
+    }
+
+    private void FindNext_Click(object sender, RoutedEventArgs e) => StepMatch(+1);
+
+    private void FindPrevious_Click(object sender, RoutedEventArgs e) => StepMatch(-1);
+
+    private void RunSearch()
+    {
+        _searchDebounce?.Stop();
+        _searchCts?.Cancel();
+
+        string query = FindBox.Text;
+        if (_doc is null || _textService is null || string.IsNullOrEmpty(query))
+        {
+            SearchState.Current.Clear();
+            FindStatus.Text = string.Empty;
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _searchCts = cts;
+        _ = SearchDocumentAsync(query, cts);
+    }
+
+    /// <summary>
+    /// Scans the document page by page, publishing hits as they're found so the
+    /// first result appears immediately on long files. Selects the first match
+    /// at or after the page you're on, so Ctrl+F finds what's in front of you.
+    /// </summary>
+    private async Task SearchDocumentAsync(string query, CancellationTokenSource cts)
+    {
+        var doc = _doc!;
+        var textService = _textService!;
+        bool matchCase = MatchCaseToggle.IsChecked == true;
+        bool wholeWord = WholeWordToggle.IsChecked == true;
+        uint startPage = (uint)Math.Max(0, _currentPage - 1);
+
+        SearchState.Current.BeginSearch();
+        FindStatus.Text = "Searching…";
+
+        int total = 0;
+        bool selected = false;
+
+        for (uint i = 0; i < doc.Pages.Count; i++)
+        {
+            if (cts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            IReadOnlyList<WordBox> words;
+            try
+            {
+                words = await textService.GetWordsAsync(i);
+            }
+            catch
+            {
+                continue; // a page without extractable text simply has no hits
+            }
+
+            if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts))
+            {
+                return;
+            }
+
+            var hits = SearchService.FindInPage(i, words, query, matchCase, wholeWord);
+            if (hits.Count > 0)
+            {
+                int firstIndexOfPage = total;
+                total += hits.Count;
+                SearchState.Current.AddMatches(hits);
+
+                // Jump to the first hit at or after the current page.
+                if (!selected && i >= startPage)
+                {
+                    selected = true;
+                    SearchState.Current.SetCurrentIndex(firstIndexOfPage);
+                    ScrollToMatch(SearchState.Current.Matches[firstIndexOfPage]);
+                }
+            }
+
+            FindStatus.Text = SearchState.Current.CurrentIndex >= 0
+                ? $"{SearchState.Current.CurrentIndex + 1} of {total}…"
+                : total > 0 ? $"{total} found…" : "Searching…";
+        }
+
+        if (cts.IsCancellationRequested || !ReferenceEquals(_searchCts, cts))
+        {
+            return;
+        }
+
+        // Nothing after the current page — wrap to the first hit in the file.
+        if (!selected && total > 0)
+        {
+            SearchState.Current.SetCurrentIndex(0);
+            ScrollToMatch(SearchState.Current.Matches[0]);
+        }
+
+        FindStatus.Text = total == 0
+            ? "No results"
+            : $"{SearchState.Current.CurrentIndex + 1} of {total}";
+    }
+
+    private void StepMatch(int direction)
+    {
+        var matches = SearchState.Current.Matches;
+        if (matches.Count == 0)
+        {
+            return;
+        }
+
+        int index = SearchState.Current.CurrentIndex + direction;
+        if (index < 0)
+        {
+            index = matches.Count - 1; // wrap
+        }
+        else if (index >= matches.Count)
+        {
+            index = 0;
+        }
+
+        SearchState.Current.SetCurrentIndex(index);
+        FindStatus.Text = $"{index + 1} of {matches.Count}";
+        ScrollToMatch(matches[index]);
+    }
+
+    /// <summary>Brings a hit into view — centred while presenting, else a third down.</summary>
+    private void ScrollToMatch(SearchMatch match)
+    {
+        if (_doc is null || match.Rects.Count == 0)
+        {
+            return;
+        }
+
+        int pageNumber = (int)match.PageIndex + 1;
+        _currentPage = Math.Clamp(pageNumber, 1, _doc.Pages.Count);
+        PageBox.Text = _currentPage.ToString();
+
+        if (_presenting)
+        {
+            ScrollToPage(_currentPage);
+            return;
+        }
+
+        var page = _doc.Pages[_currentPage - 1];
+        double matchTop = PageTop(_currentPage) + match.Rects[0].Y * page.DisplayHeight;
+        double target = matchTop - Scroller.ViewportHeight / 3;
+        Scroller.ChangeView(
+            null,
+            Math.Clamp(target, 0, Math.Max(0, Scroller.ScrollableHeight)),
+            null,
+            disableAnimation: true);
     }
 
     // ---------------------------------------------------------------- page keys / slide number

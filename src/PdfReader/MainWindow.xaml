@@ -30,6 +30,7 @@
             <KeyboardAccelerator Modifiers="Control" Key="Add" Invoked="ZoomInAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Subtract" Invoked="ZoomOutAccelerator_Invoked" />
             <KeyboardAccelerator Modifiers="Control" Key="Number0" Invoked="FitWidthAccelerator_Invoked" />
+            <KeyboardAccelerator Modifiers="Control" Key="F" Invoked="FindAccelerator_Invoked" />
             <KeyboardAccelerator Key="F5" Invoked="PresentAccelerator_Invoked" />
             <KeyboardAccelerator Key="Escape" Invoked="EscapeAccelerator_Invoked" />
             <KeyboardAccelerator Key="H" Invoked="HandAccelerator_Invoked" />
@@ -86,6 +87,50 @@
                      VerticalAlignment="Bottom"
                      HorizontalAlignment="Center"
                      Margin="24" />
+
+            <!-- Find bar (Ctrl+F) -->
+            <Border x:Name="FindBar"
+                    Visibility="Collapsed"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Top"
+                    Margin="0,12,24,0"
+                    Padding="8,6"
+                    CornerRadius="8"
+                    Background="#F2202020"
+                    BorderBrush="#40FFFFFF"
+                    BorderThickness="1">
+                <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                    <TextBox x:Name="FindBox"
+                             Width="240"
+                             PlaceholderText="Find in document"
+                             TextChanged="FindBox_TextChanged"
+                             KeyDown="FindBox_KeyDown" />
+                    <TextBlock x:Name="FindStatus"
+                               MinWidth="76"
+                               VerticalAlignment="Center"
+                               TextAlignment="Center"
+                               Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <Button Click="FindPrevious_Click" Padding="7"
+                            ToolTipService.ToolTip="Previous match (Shift+Enter)">
+                        <FontIcon Glyph="&#xE70E;" FontSize="12" />
+                    </Button>
+                    <Button Click="FindNext_Click" Padding="7"
+                            ToolTipService.ToolTip="Next match (Enter)">
+                        <FontIcon Glyph="&#xE70D;" FontSize="12" />
+                    </Button>
+                    <ToggleButton x:Name="MatchCaseToggle" Click="FindOption_Click" Padding="7,4"
+                                  ToolTipService.ToolTip="Match case">
+                        <TextBlock Text="Aa" FontSize="12" />
+                    </ToggleButton>
+                    <ToggleButton x:Name="WholeWordToggle" Click="FindOption_Click" Padding="7,4"
+                                  ToolTipService.ToolTip="Whole word">
+                        <TextBlock Text="ab" FontSize="12" TextDecorations="Underline" />
+                    </ToggleButton>
+                    <Button Click="FindClose_Click" Padding="7" ToolTipService.ToolTip="Close (Esc)">
+                        <FontIcon Glyph="&#xE711;" FontSize="12" />
+                    </Button>
+                </StackPanel>
+            </Border>
 
             <!-- "Type a slide number" indicator (PowerPoint-style) -->
             <Border x:Name="GotoIndicator"
