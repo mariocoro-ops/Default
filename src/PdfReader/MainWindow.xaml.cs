@@ -964,7 +964,12 @@ public sealed partial class MainWindow : Window
             + Math.Clamp(topFraction, 0, 1) * _doc.Pages[pageIndex].DisplayHeight;
         offset = Math.Max(0, offset - 8); // a little headroom above the target
 
-        Scroller.ChangeView(null, offset, null, disableAnimation: false);
+        // Animate only a neighbouring hop: animating a jump across the deck
+        // scrolls through every slide in between (the flashing). Following a
+        // link elsewhere should be a cut.
+        bool animate = Math.Abs((pageIndex + 1) - _currentPage) <= 1;
+
+        Scroller.ChangeView(null, offset, null, disableAnimation: !animate);
         _currentPage = pageIndex + 1;
         PageBox.Text = _currentPage.ToString();
     }
