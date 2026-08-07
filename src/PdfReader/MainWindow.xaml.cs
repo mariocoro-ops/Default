@@ -48,7 +48,6 @@ public sealed partial class MainWindow : Window
     // The page explicitly navigated to (-1 = none). Re-validated on every
     // scroll settle instead of a consume-once flag, which could get stuck when
     // a ChangeView produced no event (e.g. already at the target).
-    private int _commandedPage = -1;
 
     // Full-screen presentation mode.
     private bool _presenting;
@@ -71,11 +70,6 @@ public sealed partial class MainWindow : Window
     // scroll spot" — namely "put this slide back at the top".
     private int _exitTargetPage = -1;
 
-    // A jump whose target was off-screen and may need another pass once the
-    // scroll settles. Kept separate from _commandedPage so page tracking can't
-    // clear it — that clearing is what silently abandoned goto convergence.
-    private int _pendingJumpPage = -1;
-    private int _jumpPassesLeft;
 
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
@@ -86,7 +80,113 @@ public sealed partial class MainWindow : Window
     /// read this (not recompute from the viewport) so page-top calculations
     /// always match what's on screen, even mid-transition.
     /// </summary>
-    private double LayoutSpacing => PagesLayout?.Spacing ?? PageSpacing;
+    /// <summary>The page containers, one per page, in document order.</summary>
+    private readonly List<Grid> _pageContainers = new();
+
+    /// <summary>
+    /// Creates one container per page. They live for the document's lifetime —
+    /// cheap shells whose bitmaps are still loaded and freed by viewport — so
+    /// page positions are exact rather than estimated.
+    /// </summary>
+    private void BuildPages(DocumentViewModel doc)
+    {
+        foreach (var container in _pageContainers)
+        {
+            container.EffectiveViewportChanged -= Page_EffectiveViewportChanged;
+        }
+
+        PagesCanvas.Children.Clear();
+        _pageContainers.Clear();
+
+        foreach (var page in doc.Pages)
+        {
+            var container = new Grid
+            {
+                Background = new SolidColorBrush(Colors.White),
+                CornerRadius = new CornerRadius(2),
+                DataContext = page,
+            };
+
+            var image = new Image { Stretch = Stretch.Fill };
+            image.SetBinding(Image.SourceProperty, new Microsoft.UI.Xaml.Data.Binding
+            {
+                Source = page,
+                Path = new PropertyPath(nameof(PageViewModel.Source)),
+                Mode = Microsoft.UI.Xaml.Data.BindingMode.OneWay,
+            });
+            container.Children.Add(image);
+
+            // Overlays are laid out at 100%-zoom size and scaled by Zoom.
+            container.Children.Add(new Controls.LinkLayer
+            {
+                Page = page,
+                Width = page.BaseWidth,
+                Height = page.BaseHeight,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+            });
+            container.Children.Add(new Controls.AnnotationCanvas
+            {
+                Page = page,
+                Width = page.BaseWidth,
+                Height = page.BaseHeight,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top,
+            });
+
+            container.EffectiveViewportChanged += Page_EffectiveViewportChanged;
+            _pageContainers.Add(container);
+            PagesCanvas.Children.Add(container);
+        }
+
+        LayoutPages();
+    }
+
+    /// <summary>
+    /// Positions every page at its exact offset and sizes the canvas to match.
+    /// PageTop() mirrors this arithmetic, so computed scroll targets and the
+    /// real layout agree by construction.
+    /// </summary>
+    private void LayoutPages()
+    {
+        if (_doc is null || _pageContainers.Count != _doc.Pages.Count)
+        {
+            return;
+        }
+
+        double maxWidth = _doc.Pages.Count > 0 ? _doc.Pages.Max(p => p.DisplayWidth) : 0;
+        double canvasWidth = maxWidth + ContentMargin * 2;
+        double y = ContentMargin;
+
+        for (int i = 0; i < _doc.Pages.Count; i++)
+        {
+            var page = _doc.Pages[i];
+            var container = _pageContainers[i];
+
+            container.Width = page.DisplayWidth;
+            container.Height = page.DisplayHeight;
+            Canvas.SetLeft(container, (canvasWidth - page.DisplayWidth) / 2);
+            Canvas.SetTop(container, y);
+
+            foreach (var child in container.Children)
+            {
+                switch (child)
+                {
+                    case Controls.LinkLayer links:
+                        links.Zoom = page.Zoom;
+                        break;
+                    case Controls.AnnotationCanvas annotations:
+                        annotations.Zoom = page.Zoom;
+                        break;
+                }
+            }
+
+            y += page.DisplayHeight + PageSpacing;
+        }
+
+        PagesCanvas.Width = canvasWidth;
+        PagesCanvas.Height = Math.Max(0, y - PageSpacing) + ContentMargin;
+    }
 
     public MainWindow()
     {
@@ -210,7 +310,7 @@ public sealed partial class MainWindow : Window
         ClearGoto();
         SetTool(AnnotationTool.Hand); // hand/pan is the default reading tool
 
-        PagesRepeater.ItemsSource = doc.Pages;
+        BuildPages(doc);
         EmptyState.Visibility = Visibility.Collapsed;
 
         UpdateTitle();
@@ -613,76 +713,16 @@ public sealed partial class MainWindow : Window
 
         // While presenting, the current page is AUTHORITATIVE — it only ever
         // changes through explicit navigation (keys/wheel/goto). Any settle
-        // that isn't centered on it (stray scroll, mid-transition geometry)
-        // gets corrected back toward that page. Never re-derive the page from
-        // the offset here: transitional offsets during the full-screen switch
-        // used to latch the wrong page and made drift unrecoverable.
+        // that isn't on it (a stray scroll, or transitional geometry during the
+        // full-screen switch) is corrected back.
         if (_presenting)
         {
-            CorrectPresentationOffset();
+            ScrollToPage(_currentPage);
             return;
         }
 
-        // A jump still converging owns the view: the scroll has settled, so this
-        // is the moment to re-measure and close the remaining gap. Page tracking
-        // stays suppressed meanwhile, otherwise it would rewrite the current
-        // page to wherever the estimate happened to land and the convergence
-        // would abandon itself as "the user navigated elsewhere".
-        if (_pendingJumpPage > 0)
-        {
-            int target = _pendingJumpPage;
-
-            // How far off are we before this pass? Used to tell progress from
-            // a stall: only a pass that fails to improve costs budget, so
-            // unrelated settle events (a window resize finishing, say) can't
-            // burn through it while convergence is genuinely working.
-            double? before = MeasuredPageOffsetError(target) ?? EstimatedScrollDelta(target);
-
-            if (CorrectPageOffset(target))
-            {
-                _currentPage = target;
-                PageBox.Text = _currentPage.ToString();
-                _pendingJumpPage = -1;
-                return;
-            }
-
-            double? after = MeasuredPageOffsetError(target) ?? EstimatedScrollDelta(target);
-            bool improved = before is double b && after is double a &&
-                            Math.Abs(a) < Math.Abs(b) - 1;
-            if (!improved && --_jumpPassesLeft <= 0)
-            {
-                // Give up honestly: report the page actually on screen rather
-                // than asserting we reached the requested one.
-                _pendingJumpPage = -1;
-                _commandedPage = -1;
-                int landed = DominantVisiblePage() ?? TopPageAt(Scroller.VerticalOffset);
-                _currentPage = landed;
-                PageBox.Text = landed.ToString();
-            }
-
-            return;
-        }
-
-        // If the commanded page is measurably where it belongs, keep it;
-        // otherwise this was a manual scroll, so recompute from what's actually
-        // on screen. Validating by measurement matters — the old from-the-top
-        // arithmetic disagrees with measured jumps by design, so it always
-        // failed and discarded the commanded page.
-        int page;
-        if (_commandedPage > 0 &&
-            MeasuredPageOffsetError(_commandedPage) is double error &&
-            Math.Abs(error) <= 2)
-        {
-            page = _commandedPage;
-        }
-        else
-        {
-            _commandedPage = -1;
-            // Measured first (ground truth); arithmetic only as a fallback
-            // before any page has been realized.
-            page = DominantVisiblePage() ?? TopPageAt(Scroller.VerticalOffset);
-        }
-
+        // Manual scroll: report whichever page dominates the viewport.
+        int page = DominantVisiblePage();
         if (page != _currentPage)
         {
             _currentPage = page;
@@ -694,193 +734,60 @@ public sealed partial class MainWindow : Window
     }
 
     /// <summary>
-    /// The page occupying the most of the viewport right now, measured from the
-    /// realized elements (earliest wins a tie). Null when nothing is realized.
-    ///
-    /// This is "the slide you're looking at" — the probe that matters when a
-    /// short window shows two or three slides at once. Sampling a single point
-    /// such as the viewport centre picked whichever slide happened to straddle
-    /// it, which in a small window could be a slide or two past the one you
-    /// considered current.
+    /// The page occupying the most of the viewport — "the slide you're looking
+    /// at". Computed from the exact layout, so it needs nothing to be realized.
     /// </summary>
-    private int? DominantVisiblePage()
+    private int DominantVisiblePage()
     {
         if (_doc is null || _doc.Pages.Count == 0)
         {
-            return null;
+            return 1;
         }
 
-        double viewportHeight = Scroller.ViewportHeight;
-        if (viewportHeight <= 0)
-        {
-            return null;
-        }
+        double top = Scroller.VerticalOffset;
+        double bottom = top + Scroller.ViewportHeight;
 
-        int best = -1;
-        double bestVisible = 0;
+        int best = 1;
+        double bestVisible = -1;
+        double y = ContentMargin;
         for (int i = 0; i < _doc.Pages.Count; i++)
         {
-            if (PagesRepeater.TryGetElement(i) is not FrameworkElement element ||
-                element.ActualHeight <= 0)
-            {
-                continue; // not realized — can't be on screen
-            }
-
-            double top;
-            try
-            {
-                top = element.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
-            }
-            catch
-            {
-                continue;
-            }
-
-            double visible = Math.Min(top + element.ActualHeight, viewportHeight) - Math.Max(top, 0);
+            double height = _doc.Pages[i].DisplayHeight;
+            double visible = Math.Min(y + height, bottom) - Math.Max(y, top);
             if (visible > bestVisible + 0.5)
             {
                 bestVisible = visible;
                 best = i + 1;
             }
-        }
 
-        return best > 0 ? best : null;
-    }
-
-    /// <summary>
-    /// How far the page's REAL rendered position is from where it should sit
-    /// (centered while presenting, at the viewport top otherwise), in DIPs.
-    /// Null when the page isn't realized.
-    ///
-    /// Measuring beats arithmetic here: the pages live in a virtualizing
-    /// ItemsRepeater whose realized geometry doesn't always match a
-    /// sum-of-heights calculation — particularly right after a zoom change —
-    /// so computed scroll targets could land between slides and the error
-    /// compounded as you stepped through the deck.
-    /// </summary>
-    private double? MeasuredPageOffsetError(int pageNumber)
-    {
-        if (_doc is null || pageNumber < 1 || pageNumber > _doc.Pages.Count)
-        {
-            return null;
-        }
-
-        // Only ever read what the repeater has already realized. Forcing
-        // realization (GetOrCreateElement) pins elements outside the recycling
-        // flow and corrupts its bookkeeping — pages then never get their render
-        // pass and show as blank grey cards.
-        if (PagesRepeater.TryGetElement(pageNumber - 1) is not FrameworkElement element ||
-            element.ActualHeight <= 0)
-        {
-            return null;
-        }
-
-        try
-        {
-            double y = element.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
-            double desired = _presenting
-                ? Math.Max(0, (Scroller.ViewportHeight - element.ActualHeight) / 2)
-                : 0;
-            return y - desired;
-        }
-        catch
-        {
-            return null; // element detached mid-measure
-        }
-    }
-
-    /// <summary>
-    /// Scroll delta that would bring a page to where it belongs, derived from
-    /// the nearest REALIZED page: measure where that page actually sits, then
-    /// walk the known page heights across to the target.
-    ///
-    /// This keeps distant jumps honest without materializing anything. The raw
-    /// sum-from-the-top estimate is interpreted by the repeater against its
-    /// stale per-item sizes, which is how exiting on slide 20 landed on 12;
-    /// anchoring to a measured page removes that error, and any residue is
-    /// mopped up by a second pass once more pages are realized.
-    /// </summary>
-    private double? EstimatedScrollDelta(int pageNumber)
-    {
-        if (_doc is null || pageNumber < 1 || pageNumber > _doc.Pages.Count)
-        {
-            return null;
-        }
-
-        // Nearest realized page to anchor on.
-        int anchor = -1;
-        for (int distance = 0; distance < _doc.Pages.Count; distance++)
-        {
-            foreach (int candidate in new[] { pageNumber - distance, pageNumber + distance })
+            y += height + PageSpacing;
+            if (y > bottom)
             {
-                if (candidate >= 1 && candidate <= _doc.Pages.Count &&
-                    PagesRepeater.TryGetElement(candidate - 1) is FrameworkElement { ActualHeight: > 0 })
-                {
-                    anchor = candidate;
-                    break;
-                }
-            }
-
-            if (anchor > 0)
-            {
-                break;
+                break; // pages below the viewport can't win
             }
         }
 
-        if (anchor < 0 || MeasuredPageOffsetError(anchor) is not double anchorError)
-        {
-            return null;
-        }
-
-        // Distance from the anchor to the target across the intervening pages.
-        double span = 0;
-        for (int p = Math.Min(anchor, pageNumber); p < Math.Max(anchor, pageNumber); p++)
-        {
-            span += _doc.Pages[p - 1].DisplayHeight + LayoutSpacing;
-        }
-
-        return anchorError + (pageNumber > anchor ? span : -span);
+        return best;
     }
 
     /// <summary>
-    /// Nudges the scroll so a slide sits where it belongs. Returns true when the
-    /// view is already correct (or is clamped at an end and can't get closer).
+    /// Scrolls so the page sits where it belongs. Positions are exact, so this
+    /// is a single move — no convergence passes, no verification.
     /// </summary>
-    private bool CorrectPageOffset(int pageNumber, bool animate = false)
+    private void ScrollToPage(int pageNumber, bool animate = false)
     {
-        if (_doc is null || pageNumber < 1 || pageNumber > _doc.Pages.Count)
+        if (_doc is null || _doc.Pages.Count == 0)
         {
-            return false;
+            return;
         }
 
-        // Prefer the target's own measurement; otherwise anchor on the nearest
-        // realized page; only fall back to the from-the-top sum if nothing at
-        // all is realized (e.g. the document was just opened).
-        double? delta = MeasuredPageOffsetError(pageNumber) ?? EstimatedScrollDelta(pageNumber);
-        if (delta is not double error)
+        pageNumber = Math.Clamp(pageNumber, 1, _doc.Pages.Count);
+        double target = Math.Clamp(ScrollTargetFor(pageNumber), 0, Math.Max(0, Scroller.ScrollableHeight));
+        if (Math.Abs(target - Scroller.VerticalOffset) > 0.5)
         {
-            Scroller.ChangeView(
-                null, ScrollTargetFor(pageNumber), null, disableAnimation: !animate);
-            return false;
+            Scroller.ChangeView(null, target, null, disableAnimation: !animate);
         }
-
-        if (Math.Abs(error) <= 1)
-        {
-            return true;
-        }
-
-        double target = Math.Clamp(Scroller.VerticalOffset + error, 0, Scroller.ScrollableHeight);
-        if (Math.Abs(target - Scroller.VerticalOffset) <= 0.5)
-        {
-            return true; // already clamped at an end; this is as close as it gets
-        }
-
-        Scroller.ChangeView(null, target, null, disableAnimation: !animate);
-        return false;
     }
-
-    private bool CorrectPresentationOffset(bool animate = false) =>
-        CorrectPageOffset(_currentPage, animate);
 
     /// <summary>Scroll offset of the top of a 1-based page.</summary>
     private double PageTop(int pageNumber)
@@ -888,7 +795,7 @@ public sealed partial class MainWindow : Window
         double offset = ContentMargin;
         for (int i = 0; i < pageNumber - 1 && i < _doc!.Pages.Count; i++)
         {
-            offset += _doc.Pages[i].DisplayHeight + LayoutSpacing;
+            offset += _doc.Pages[i].DisplayHeight + PageSpacing;
         }
 
         return offset;
@@ -907,33 +814,6 @@ public sealed partial class MainWindow : Window
         return Math.Max(0, target);
     }
 
-    /// <summary>The 1-based page whose top the given offset has reached.</summary>
-    private int TopPageAt(double offset)
-    {
-        if (_doc is null || _doc.Pages.Count == 0)
-        {
-            return 1;
-        }
-
-        int page = 1;
-        double y = ContentMargin;
-        for (int i = 0; i < _doc.Pages.Count; i++)
-        {
-            if (y <= offset + 4)
-            {
-                page = i + 1;
-            }
-            else
-            {
-                break;
-            }
-
-            y += _doc.Pages[i].DisplayHeight + LayoutSpacing;
-        }
-
-        return page;
-    }
-
     private void JumpToPage(int pageNumber, bool animate = false)
     {
         if (_doc is null)
@@ -941,39 +821,16 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        bool targetWasRealized =
-            PagesRepeater.TryGetElement(pageNumber - 1) is FrameworkElement { ActualHeight: > 0 };
+        pageNumber = Math.Clamp(pageNumber, 1, _doc.Pages.Count);
 
         // Animate only a neighbouring move. Animating a multi-slide jump
         // literally scrolls through everything in between — that's the parade
         // of slides flashing past; a distant jump should be a cut.
         bool animateThis = animate && Math.Abs(pageNumber - _currentPage) <= 1;
 
-        _commandedPage = pageNumber;
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
-
-        bool done = CorrectPageOffset(pageNumber, animateThis);
-
-        // A neighbouring slide is already on screen: one measured move lands it,
-        // and follow-up passes only produced the visible rattle. Converge only
-        // for jumps that started with the target off-screen — driven by the
-        // scroll-settled event, so each pass measures a view at rest.
-        // While presenting, the settle path already re-measures and converges on
-        // the current page every time the view comes to rest, so no separate
-        // pending-jump state is needed (and it would never be consumed there).
-        if (done || targetWasRealized || _presenting)
-        {
-            _pendingJumpPage = -1;
-            return;
-        }
-
-        _pendingJumpPage = pageNumber;
-
-        // Budget counts only stalled passes now, so it can be generous: after a
-        // big zoom change (leaving full screen) the repeater's size estimates
-        // are stale and a long jump may need several refinements.
-        _jumpPassesLeft = 8;
+        ScrollToPage(pageNumber, animateThis);
     }
 
     // ---------------------------------------------------------------- link navigation
@@ -989,7 +846,7 @@ public sealed partial class MainWindow : Window
         pageIndex = Math.Clamp(pageIndex, 0, _doc.Pages.Count - 1);
         double offset = PageTop(pageIndex + 1)
             + Math.Clamp(topFraction, 0, 1) * _doc.Pages[pageIndex].DisplayHeight;
-        offset = Math.Max(0, offset - 8); // a little headroom above the target
+        offset = Math.Clamp(offset - 8, 0, Math.Max(0, Scroller.ScrollableHeight)); // headroom above the target
 
         // Animate only a neighbouring hop: animating a jump across the deck
         // scrolls through every slide in between (the flashing). Following a
@@ -1077,6 +934,7 @@ public sealed partial class MainWindow : Window
         double contentY = Scroller.VerticalOffset + py;
 
         _doc.SetZoom(zoom);
+        LayoutPages(); // reposition every page at the new exact offsets
         ZoomText.Text = $"{Math.Round(zoom * 100)}%";
 
         if (keepAnchor)
@@ -1144,55 +1002,25 @@ public sealed partial class MainWindow : Window
 
         // Re-zooming rescales every page height while the scroll offset stays
         // numerically the same — silently relocating the view to a different
-        // page. Capture where the viewport sits within the anchor page first
-        // (measured), then restore that same relative spot after the reflow,
-        // so window resizes keep you where you were.
-        int anchorPage = DominantVisiblePage() ?? TopPageAt(Scroller.VerticalOffset);
-        double? fractionInPage = null;
-        if (PagesRepeater.TryGetElement(anchorPage - 1) is FrameworkElement before &&
-            before.ActualHeight > 0)
-        {
-            try
-            {
-                double y = before.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
-                fractionInPage = Math.Clamp(-y / before.ActualHeight, -0.5, 1.5);
-            }
-            catch
-            {
-                // fall through to the arithmetic path below
-            }
-        }
-
+        // page. Capture where the viewport sits within the anchor page, then
+        // restore that same relative spot after the reflow, so window resizes
+        // keep you where you were. Positions are exact, so plain arithmetic.
+        int anchorPage = DominantVisiblePage();
         double heightBefore = Math.Max(1, _doc.Pages[anchorPage - 1].DisplayHeight);
-        fractionInPage ??= Math.Clamp(
+        double fractionInPage = Math.Clamp(
             (Scroller.VerticalOffset - PageTop(anchorPage)) / heightBefore, -0.5, 1.5);
 
         SetZoom(zoom, keepAnchor: false);
         ZoomText.Text = $"{Math.Round(_doc.Zoom * 100)}%";
         Root.UpdateLayout();
 
-        if (PagesRepeater.TryGetElement(anchorPage - 1) is FrameworkElement after &&
-            after.ActualHeight > 0)
-        {
-            try
-            {
-                double y = after.TransformToVisual(Scroller).TransformPoint(new Point(0, 0)).Y;
-                double delta = y + fractionInPage.Value * after.ActualHeight;
-                Scroller.ChangeView(
-                    null,
-                    Math.Max(0, Scroller.VerticalOffset + delta),
-                    null,
-                    disableAnimation: true);
-                return;
-            }
-            catch
-            {
-                // fall through to the arithmetic path below
-            }
-        }
-
-        double target = PageTop(anchorPage) + fractionInPage.Value * _doc.Pages[anchorPage - 1].DisplayHeight;
-        Scroller.ChangeView(null, Math.Max(0, target), null, disableAnimation: true);
+        double target = PageTop(anchorPage)
+            + fractionInPage * _doc.Pages[anchorPage - 1].DisplayHeight;
+        Scroller.ChangeView(
+            null,
+            Math.Clamp(target, 0, Math.Max(0, Scroller.ScrollableHeight)),
+            null,
+            disableAnimation: true);
     }
 
     /// <summary>Fits the whole slide on screen (used in presentation mode) and centers it.</summary>
@@ -1295,7 +1123,7 @@ public sealed partial class MainWindow : Window
         // Lock in the slide to present BEFORE any geometry changes: the one
         // actually filling most of the screen, measured — not a point probe,
         // which in a short window picked a slide or two further down.
-        _currentPage = DominantVisiblePage() ?? _currentPage;
+        _currentPage = DominantVisiblePage();
         PageBox.Text = _currentPage.ToString();
 
         _presenting = true;
@@ -1395,7 +1223,13 @@ public sealed partial class MainWindow : Window
             {
                 // Zoom is right — verify the slide's MEASURED position and
                 // nudge it, rather than trusting computed page offsets.
-                stable = CorrectPresentationOffset();
+                double centered = Math.Clamp(
+                    ScrollTargetFor(_currentPage), 0, Math.Max(0, Scroller.ScrollableHeight));
+                stable = Math.Abs(centered - Scroller.VerticalOffset) <= 1;
+                if (!stable)
+                {
+                    Scroller.ChangeView(null, centered, null, disableAnimation: true);
+                }
             }
         }
 
@@ -1446,7 +1280,13 @@ public sealed partial class MainWindow : Window
                     // Realizes the target if needed, and re-issues the estimate
                     // when it still can't be measured — so a far-off page keeps
                     // converging instead of the loop idling until it times out.
-                    stable = CorrectPageOffset(_exitTargetPage);
+                    double restored = Math.Clamp(
+                        ScrollTargetFor(_exitTargetPage), 0, Math.Max(0, Scroller.ScrollableHeight));
+                    stable = Math.Abs(restored - Scroller.VerticalOffset) <= 1;
+                    if (!stable)
+                    {
+                        Scroller.ChangeView(null, restored, null, disableAnimation: true);
+                    }
                 }
             }
         }
@@ -1467,10 +1307,6 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void EndExitRestore()
     {
-        // Also drops any in-flight jump convergence.
-        _commandedPage = -1;
-        _pendingJumpPage = -1;
-
         if (_exitTargetPage < 0)
         {
             return;

@@ -53,36 +53,15 @@
                           UseSystemFocusVisuals="False"
                           ViewChanged="Scroller_ViewChanged"
                           SizeChanged="Scroller_SizeChanged">
-                <ItemsRepeater x:Name="PagesRepeater" Margin="24" HorizontalAlignment="Center">
-                    <ItemsRepeater.Layout>
-                        <StackLayout x:Name="PagesLayout" Orientation="Vertical" Spacing="16" />
-                    </ItemsRepeater.Layout>
-                    <ItemsRepeater.ItemTemplate>
-                        <DataTemplate>
-                            <Grid Width="{Binding DisplayWidth}"
-                                  Height="{Binding DisplayHeight}"
-                                  Background="White"
-                                  CornerRadius="2"
-                                  EffectiveViewportChanged="Page_EffectiveViewportChanged">
-                                <Image Source="{Binding Source}" Stretch="Fill" />
-                                <controls:LinkLayer
-                                    Page="{Binding}"
-                                    Zoom="{Binding Zoom}"
-                                    Width="{Binding BaseWidth}"
-                                    Height="{Binding BaseHeight}"
-                                    HorizontalAlignment="Left"
-                                    VerticalAlignment="Top" />
-                                <controls:AnnotationCanvas
-                                    Page="{Binding}"
-                                    Zoom="{Binding Zoom}"
-                                    Width="{Binding BaseWidth}"
-                                    Height="{Binding BaseHeight}"
-                                    HorizontalAlignment="Left"
-                                    VerticalAlignment="Top" />
-                            </Grid>
-                        </DataTemplate>
-                    </ItemsRepeater.ItemTemplate>
-                </ItemsRepeater>
+                <!-- Pages are positioned absolutely at exactly computed offsets.
+                     A virtualizing layout ESTIMATES the position of off-screen
+                     pages, which disagreed with every navigation calculation and
+                     caused jumps and links to land on the wrong slide. Page
+                     bitmaps are still loaded/released lazily by viewport, so the
+                     memory that matters stays virtualized. -->
+                <Canvas x:Name="PagesCanvas"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Top" />
             </ScrollViewer>
 
             <!-- Empty state -->
