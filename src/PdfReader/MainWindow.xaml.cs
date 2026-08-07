@@ -71,6 +71,12 @@ public sealed partial class MainWindow : Window
     // scroll spot" — namely "put this slide back at the top".
     private int _exitTargetPage = -1;
 
+    // A jump whose target was off-screen and may need another pass once the
+    // scroll settles. Kept separate from _commandedPage so page tracking can't
+    // clear it — that clearing is what silently abandoned goto convergence.
+    private int _pendingJumpPage = -1;
+    private int _jumpPassesLeft;
+
     // "Type a slide number, press Enter" quick navigation.
     private string _gotoBuffer = string.Empty;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _gotoTimer;
@@ -617,12 +623,32 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        // If the view sits where a commanded jump landed (allowing for end-of-
-        // document clamping), keep that page; otherwise it was a manual scroll,
-        // so recompute from the offset — which can never drift or get stuck.
+        // A jump still converging owns the view: the scroll has settled, so this
+        // is the moment to re-measure and close the remaining gap. Page tracking
+        // stays suppressed meanwhile, otherwise it would rewrite the current
+        // page to wherever the estimate happened to land and the convergence
+        // would abandon itself as "the user navigated elsewhere".
+        if (_pendingJumpPage > 0)
+        {
+            if (_jumpPassesLeft-- <= 0 || CorrectPageOffset(_pendingJumpPage))
+            {
+                _currentPage = _pendingJumpPage;
+                PageBox.Text = _currentPage.ToString();
+                _pendingJumpPage = -1;
+            }
+
+            return;
+        }
+
+        // If the commanded page is measurably where it belongs, keep it;
+        // otherwise this was a manual scroll, so recompute from what's actually
+        // on screen. Validating by measurement matters — the old from-the-top
+        // arithmetic disagrees with measured jumps by design, so it always
+        // failed and discarded the commanded page.
         int page;
         if (_commandedPage > 0 &&
-            Math.Abs(Math.Clamp(ScrollTargetFor(_commandedPage), 0, Scroller.ScrollableHeight) - Scroller.VerticalOffset) <= 2)
+            MeasuredPageOffsetError(_commandedPage) is double error &&
+            Math.Abs(error) <= 2)
         {
             page = _commandedPage;
         }
@@ -895,51 +921,32 @@ public sealed partial class MainWindow : Window
         bool targetWasRealized =
             PagesRepeater.TryGetElement(pageNumber - 1) is FrameworkElement { ActualHeight: > 0 };
 
+        // Animate only a neighbouring move. Animating a multi-slide jump
+        // literally scrolls through everything in between — that's the parade
+        // of slides flashing past; a distant jump should be a cut.
+        bool animateThis = animate && Math.Abs(pageNumber - _currentPage) <= 1;
+
         _commandedPage = pageNumber;
         _currentPage = pageNumber;
         PageBox.Text = pageNumber.ToString();
 
-        bool done = CorrectPageOffset(pageNumber, animate);
+        bool done = CorrectPageOffset(pageNumber, animateThis);
 
-        // A neighbouring slide (Page Up/Down, wheel, arrows) is already on
-        // screen: one measured move lands it, and adding follow-up passes only
-        // produced the visible rattle. Converge only for jumps that started
-        // with the target off-screen.
-        if (done || targetWasRealized)
+        // A neighbouring slide is already on screen: one measured move lands it,
+        // and follow-up passes only produced the visible rattle. Converge only
+        // for jumps that started with the target off-screen — driven by the
+        // scroll-settled event, so each pass measures a view at rest.
+        // While presenting, the settle path already re-measures and converges on
+        // the current page every time the view comes to rest, so no separate
+        // pending-jump state is needed (and it would never be consumed there).
+        if (done || targetWasRealized || _presenting)
         {
+            _pendingJumpPage = -1;
             return;
         }
 
-        ScheduleJumpConvergence(pageNumber, passesLeft: 2);
-    }
-
-    /// <summary>
-    /// Finishes a long jump over the next frame or two: after the scroll has
-    /// been applied, more pages near the target are realized, so a re-measured
-    /// correction lands accurately. Bounded, and abandoned if the user takes
-    /// over or navigates elsewhere.
-    /// </summary>
-    private void ScheduleJumpConvergence(int pageNumber, int passesLeft)
-    {
-        if (passesLeft <= 0)
-        {
-            return;
-        }
-
-        DispatcherQueue.TryEnqueue(
-            Microsoft.UI.Dispatching.DispatcherQueuePriority.Low,
-            () =>
-            {
-                if (_doc is null || _currentPage != pageNumber || _commandedPage != pageNumber)
-                {
-                    return; // superseded by newer navigation or user input
-                }
-
-                if (!CorrectPageOffset(pageNumber))
-                {
-                    ScheduleJumpConvergence(pageNumber, passesLeft - 1);
-                }
-            });
+        _pendingJumpPage = pageNumber;
+        _jumpPassesLeft = 3;
     }
 
     // ---------------------------------------------------------------- link navigation
@@ -1428,9 +1435,9 @@ public sealed partial class MainWindow : Window
     /// </summary>
     private void EndExitRestore()
     {
-        // Also drops any in-flight jump convergence: its passes bail out when
-        // the commanded page no longer matches.
+        // Also drops any in-flight jump convergence.
         _commandedPage = -1;
+        _pendingJumpPage = -1;
 
         if (_exitTargetPage < 0)
         {
