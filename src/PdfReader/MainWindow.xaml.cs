@@ -630,11 +630,34 @@ public sealed partial class MainWindow : Window
         // would abandon itself as "the user navigated elsewhere".
         if (_pendingJumpPage > 0)
         {
-            if (_jumpPassesLeft-- <= 0 || CorrectPageOffset(_pendingJumpPage))
+            int target = _pendingJumpPage;
+
+            // How far off are we before this pass? Used to tell progress from
+            // a stall: only a pass that fails to improve costs budget, so
+            // unrelated settle events (a window resize finishing, say) can't
+            // burn through it while convergence is genuinely working.
+            double? before = MeasuredPageOffsetError(target) ?? EstimatedScrollDelta(target);
+
+            if (CorrectPageOffset(target))
             {
-                _currentPage = _pendingJumpPage;
+                _currentPage = target;
                 PageBox.Text = _currentPage.ToString();
                 _pendingJumpPage = -1;
+                return;
+            }
+
+            double? after = MeasuredPageOffsetError(target) ?? EstimatedScrollDelta(target);
+            bool improved = before is double b && after is double a &&
+                            Math.Abs(a) < Math.Abs(b) - 1;
+            if (!improved && --_jumpPassesLeft <= 0)
+            {
+                // Give up honestly: report the page actually on screen rather
+                // than asserting we reached the requested one.
+                _pendingJumpPage = -1;
+                _commandedPage = -1;
+                int landed = DominantVisiblePage() ?? TopPageAt(Scroller.VerticalOffset);
+                _currentPage = landed;
+                PageBox.Text = landed.ToString();
             }
 
             return;
@@ -946,7 +969,11 @@ public sealed partial class MainWindow : Window
         }
 
         _pendingJumpPage = pageNumber;
-        _jumpPassesLeft = 3;
+
+        // Budget counts only stalled passes now, so it can be generous: after a
+        // big zoom change (leaving full screen) the repeater's size estimates
+        // are stale and a long jump may need several refinements.
+        _jumpPassesLeft = 8;
     }
 
     // ---------------------------------------------------------------- link navigation
