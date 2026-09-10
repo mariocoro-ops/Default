@@ -3,7 +3,7 @@
 A clean, dark-themed PDF reader and annotator for **Windows 11**, built with
 **WinUI 3** (Windows App SDK) and free/open-source PDF libraries only.
 
-![status](https://img.shields.io/badge/version-1.0-blue)
+![status](https://img.shields.io/badge/version-1.1-blue)
 
 ## Feature roadmap
 
@@ -13,6 +13,7 @@ A clean, dark-themed PDF reader and annotator for **Windows 11**, built with
 | **2 — Markup** | Freehand pen drawing, text-aware highlighting, eraser, undo, save annotated copy (PDFsharp) | ✅ Done |
 | **3 — Objects** | Text selection + copy, text boxes, sticky-note comments, pre-saved signature stamp from a scanned image | ✅ Done |
 | **4 — Ship** | Full icon asset set, v1.0, self-contained Release packages, one-command signed installer build | ✅ Done |
+| **5 — Pages** | Page editor tab: delete, reorder and merge pages from other PDFs, with its own undo | ✅ Done |
 
 ## Tech stack
 
@@ -111,6 +112,12 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 | Undo | `Ctrl+Z` or the undo button |
 | Back to scrolling | `Esc` or the select tool |
 | Save As | `Ctrl+S` always opens a Save-As dialog and writes a **new** annotated PDF — it will not overwrite the file you have open |
+| Edit pages | Switch to the **Pages** tab in the toolbar for a thumbnail grid of the document |
+| Delete pages | On the Pages tab, select thumbnails (click, `Ctrl`-click, `Shift`-click) and press `Delete` or the bin button. At least one page must survive |
+| Reorder pages | On the Pages tab, drag thumbnails, or use the ◀ ▶ buttons to nudge the selection |
+| Merge another PDF | On the Pages tab, the **+** button — pick a file, choose which of its pages to take (`all`, or `1-3, 7`) and whether they go before the selection or at the end |
+| Undo a page change | `Ctrl+Z` on the Pages tab (a separate stack from annotation undo, up to 20 steps) |
+| Save edited pages | `Ctrl+S` on the Pages tab writes a **new** PDF, then offers to open it in the viewer so you can annotate or present the new version |
 
 ## Architecture notes
 
@@ -142,6 +149,16 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
   overlay itself distinguishes a tap (follow the link) from a drag (pan), so
   links work in both navigation modes without interfering with the editing
   tools.
+- The **Pages tab is a separate document**: it holds its own copy of the bytes
+  and its own renderer, and never touches the viewer's pages, annotations, or
+  the caches keyed off page indices (text geometry, links, search). Every page
+  edit is "produce new bytes, then rebuild from scratch" rather than an
+  in-place mutation — affordable precisely because nothing in the editor needs
+  to survive a rebuild. Results reach the viewer only by saving a new file that
+  the viewer then opens through the ordinary open path.
+- The tab switcher sits inside the existing toolbar row rather than adding a
+  row of its own, so the chrome height — which drives both the document inset
+  and how far the chrome slides away while presenting — is unchanged.
 
 ## Known limitations (as of Phase 3)
 
@@ -164,3 +181,22 @@ The Visual Studio wizard (right-click project → **Package and Publish** →
 - Presentation mode fits the whole slide on screen and centers it. Slides
   whose aspect ratio matches the display fill it edge to edge; a mismatched
   ratio (e.g. 4:3 on a widescreen) is letterboxed on a black background.
+- Inserting or reordering pages rebuilds the document, which copies each page
+  with its resources but drops document-level extras — **bookmarks/outlines
+  and form fields do not survive**, and links whose destination lies outside
+  the pages you kept will break. Deleting pages uses a gentler path that
+  preserves document structure where PDFsharp can.
+- Merging holds both files plus the result in memory at once, so a very large
+  merge is briefly memory-hungry.
+- Page-editor undo stores a full copy of the document per step (20 steps max).
+
+## Rolling back
+
+`v1.0-stable` (commit `1b340cd`) is the last release before the Pages tab —
+the viewer, annotations, presentation mode, links and find-in-document only.
+To go back, build from that commit, then uninstall before installing, since
+MSIX won't replace a package with an older one in place:
+
+```powershell
+Get-AppxPackage *SlatePdf* | Remove-AppxPackage
+```

@@ -332,6 +332,10 @@ public sealed partial class MainWindow : Window
         SearchState.Current.Clear();
         SetTool(AnnotationTool.Hand); // hand/pan is the default reading tool
 
+        // A different document means the page editor's working copy is stale;
+        // drop it and come back to the viewer.
+        ResetEditorForNewDocument();
+
         BuildPages(doc);
         EmptyState.Visibility = Visibility.Collapsed;
 
@@ -360,6 +364,7 @@ public sealed partial class MainWindow : Window
         EraseToolButton.IsEnabled = true;
         ColorsButton.IsEnabled = true;
         PresentButton.IsEnabled = true;
+        PagesTabButton.IsEnabled = true;
 
         _fitWidthMode = true;
         Root.UpdateLayout();
@@ -376,6 +381,11 @@ public sealed partial class MainWindow : Window
 
     private async Task PickAndOpenAsync()
     {
+        if (!await ConfirmDiscardPageEditsAsync())
+        {
+            return;
+        }
+
         var picker = new FileOpenPicker();
         picker.FileTypeFilter.Add(".pdf");
         InitializeWithWindow.Initialize(picker, WindowNative.GetWindowHandle(this));
@@ -396,9 +406,13 @@ public sealed partial class MainWindow : Window
             return;
         }
 
-        string name = _isModified ? $"{_doc.FileName} •" : _doc.FileName;
-        Title = $"{name} - Slate PDF";
-        FileNameText.Text = $"—  {name}";
+        // On the Pages tab the dot tracks the editor's unsaved page changes,
+        // which are a different thing from unsaved annotations.
+        bool dirty = _pagesTab ? _editor?.IsModified == true : _isModified;
+        string name = dirty ? $"{_doc.FileName} •" : _doc.FileName;
+        string suffix = _pagesTab ? "  (pages)" : string.Empty;
+        Title = $"{name}{suffix} - Slate PDF";
+        FileNameText.Text = $"—  {name}{suffix}";
     }
 
     // ---------------------------------------------------------------- drag & drop
@@ -422,7 +436,7 @@ public sealed partial class MainWindow : Window
         var items = await e.DataView.GetStorageItemsAsync();
         var pdf = items.OfType<StorageFile>()
             .FirstOrDefault(f => f.FileType.Equals(".pdf", StringComparison.OrdinalIgnoreCase));
-        if (pdf is not null)
+        if (pdf is not null && await ConfirmDiscardPageEditsAsync())
         {
             await OpenFileAsync(pdf);
         }
@@ -658,11 +672,16 @@ public sealed partial class MainWindow : Window
 
     private async void SaveButton_Click(object sender, RoutedEventArgs e) => await SaveCopyAsync();
 
-    private async Task SaveCopyAsync()
+    /// <summary>
+    /// Saves the annotations into a new PDF. Returns the file that was written,
+    /// or null if the user cancelled or the save failed — the Pages tab uses
+    /// that to decide whether it's safe to carry on.
+    /// </summary>
+    private async Task<StorageFile?> SaveCopyAsync()
     {
         if (_doc is null)
         {
-            return;
+            return null;
         }
 
         var picker = new FileSavePicker();
@@ -674,7 +693,7 @@ public sealed partial class MainWindow : Window
         var file = await picker.PickSaveFileAsync();
         if (file is null)
         {
-            return;
+            return null;
         }
 
         // Never overwrite the file that's open — this is always "Save As a new
@@ -684,7 +703,7 @@ public sealed partial class MainWindow : Window
             await ShowErrorAsync(
                 "Choose a different name",
                 "Saving over the original isn't allowed — pick a new file name so a fresh version is created.");
-            return;
+            return null;
         }
 
         try
@@ -694,12 +713,13 @@ public sealed partial class MainWindow : Window
         catch
         {
             await ShowErrorAsync("Save failed", $"Could not save to \"{file.Path}\".");
-            return;
+            return null;
         }
 
         _isModified = false;
         UpdateTitle();
         ShowSaveConfirmation(file.Path);
+        return file;
     }
 
     private void ShowSaveConfirmation(string path)
@@ -1111,7 +1131,7 @@ public sealed partial class MainWindow : Window
 
     private void PresentAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
-        if (_doc is null)
+        if (_doc is null || _pagesTab)
         {
             args.Handled = false;
             return;
@@ -1408,7 +1428,9 @@ public sealed partial class MainWindow : Window
     {
         if (!_presenting)
         {
-            DocumentHost.Margin = new Thickness(0, ChromeHost.ActualHeight, 0, 0);
+            var inset = new Thickness(0, ChromeHost.ActualHeight, 0, 0);
+            DocumentHost.Margin = inset;
+            EditorHost.Margin = inset;
         }
         else if (!_chromeShown)
         {
@@ -1549,23 +1571,51 @@ public sealed partial class MainWindow : Window
     private async void SaveAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
+
+        // Ctrl+S saves whatever the visible tab is editing.
+        if (_pagesTab)
+        {
+            await SaveEditedPdfAsync();
+            return;
+        }
+
         await SaveCopyAsync();
     }
 
     private async void PrintAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
+        if (_pagesTab)
+        {
+            args.Handled = false;
+            return;
+        }
+
         args.Handled = true;
         await PrintAsync();
     }
 
-    private void UndoAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
+    private async void UndoAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
+
+        // Page edits and annotation edits are separate undo stacks; Ctrl+Z
+        // works on whichever one the visible tab owns.
+        if (_pagesTab)
+        {
+            await EditorUndoAsync();
+            return;
+        }
+
         Undo();
     }
 
     private void CopyAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
+        if (_pagesTab)
+        {
+            return;
+        }
+
         // Let TextBoxes (page box, text editors, comment editors) keep their
         // native copy behavior.
         if (FocusManager.GetFocusedElement(Root.XamlRoot) is TextBox)
@@ -1587,18 +1637,36 @@ public sealed partial class MainWindow : Window
 
     private void ZoomInAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
+        if (_pagesTab)
+        {
+            args.Handled = false;
+            return;
+        }
+
         args.Handled = true;
         StepZoom(+1);
     }
 
     private void ZoomOutAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
+        if (_pagesTab)
+        {
+            args.Handled = false;
+            return;
+        }
+
         args.Handled = true;
         StepZoom(-1);
     }
 
     private void FitWidthAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
+        if (_pagesTab)
+        {
+            args.Handled = false;
+            return;
+        }
+
         args.Handled = true;
         _fitWidthMode = true;
         ApplyFitWidth();
@@ -1606,6 +1674,20 @@ public sealed partial class MainWindow : Window
 
     private void EscapeAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
+        // On the Pages tab there is no cascade — Escape just drops the selection.
+        if (_pagesTab)
+        {
+            if (PagesGrid.SelectedItems.Count > 0)
+            {
+                PagesGrid.SelectedItems.Clear();
+                args.Handled = true;
+                return;
+            }
+
+            args.Handled = false;
+            return;
+        }
+
         // Esc backs out one level at a time: close the find bar, cancel a
         // half-typed slide number, return to the hand tool, leave presentation.
         if (FindBar.Visibility == Visibility.Visible)
@@ -1642,8 +1724,9 @@ public sealed partial class MainWindow : Window
 
     private void HandAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
-        // Don't hijack "h" while typing in a text field.
-        if (_doc is null || IsTextBoxFocused())
+        // Don't hijack "h" while typing in a text field, or on the Pages tab
+        // where there is no tool to switch to.
+        if (_doc is null || _pagesTab || IsTextBoxFocused())
         {
             args.Handled = false;
             return;
@@ -1657,7 +1740,7 @@ public sealed partial class MainWindow : Window
     {
         // N drops a post-it on the current page (works while presenting too);
         // don't fire while typing into a field or an open note.
-        if (_doc is null || IsTextBoxFocused())
+        if (_doc is null || _pagesTab || IsTextBoxFocused())
         {
             args.Handled = false;
             return;
@@ -1671,7 +1754,7 @@ public sealed partial class MainWindow : Window
 
     private void FindAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
-        if (_doc is null)
+        if (_doc is null || _pagesTab)
         {
             args.Handled = false;
             return;
@@ -1897,6 +1980,19 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // The Pages tab has its own keyboard story: the grid handles arrows and
+        // Home/End itself, and Delete removes the selection.
+        if (_pagesTab)
+        {
+            if (e.Key == VirtualKey.Delete)
+            {
+                _ = DeleteSelectedPagesAsync();
+                e.Handled = true;
+            }
+
+            return;
+        }
+
         EndExitRestore(); // any navigation key means the user is driving
 
         switch (e.Key)
@@ -1937,7 +2033,7 @@ public sealed partial class MainWindow : Window
     private void DigitAccelerator_Invoked(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         int digit = DigitFromKey(sender.Key);
-        if (_doc is null || digit < 0 || IsTextBoxFocused())
+        if (_doc is null || _pagesTab || digit < 0 || IsTextBoxFocused())
         {
             args.Handled = false;
             return;

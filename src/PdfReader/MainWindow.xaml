@@ -157,6 +157,55 @@
             </Border>
         </Grid>
 
+        <!-- Page editor. A sibling of the viewer, not a layer over it: it owns
+             a separate document (its own bytes, its own renderer) so nothing it
+             does can reach the viewer's pages, annotations or caches. Only one
+             of the two hosts is visible at a time. -->
+        <Grid x:Name="EditorHost" Margin="0,88,0,0" Visibility="Collapsed">
+            <GridView x:Name="PagesGrid"
+                      Background="{ThemeResource LayerFillColorDefaultBrush}"
+                      Padding="20"
+                      SelectionMode="Extended"
+                      IsItemClickEnabled="False"
+                      CanReorderItems="True"
+                      CanDragItems="True"
+                      AllowDrop="True"
+                      SelectionChanged="PagesGrid_SelectionChanged"
+                      DragItemsCompleted="PagesGrid_DragItemsCompleted"
+                      ContainerContentChanging="PagesGrid_ContainerContentChanging">
+                <GridView.ItemTemplate>
+                    <DataTemplate>
+                        <StackPanel Spacing="6" Margin="6" HorizontalAlignment="Center">
+                            <Border Background="White"
+                                    CornerRadius="2"
+                                    BorderBrush="#40FFFFFF"
+                                    BorderThickness="1"
+                                    Width="168"
+                                    Height="{Binding ThumbHeight}">
+                                <Image Source="{Binding Source}" Stretch="Fill" />
+                            </Border>
+                            <TextBlock Text="{Binding Label}"
+                                       HorizontalAlignment="Center"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                        </StackPanel>
+                    </DataTemplate>
+                </GridView.ItemTemplate>
+            </GridView>
+
+            <!-- Covers the grid while an edit is being applied, so a second
+                 click can't land on a document that's being rebuilt. -->
+            <Grid x:Name="EditorBusyOverlay" Visibility="Collapsed" Background="#80000000">
+                <ProgressRing IsActive="True" Width="48" Height="48" />
+            </Grid>
+
+            <InfoBar x:Name="EditorInfoBar"
+                     Severity="Success"
+                     IsOpen="False"
+                     VerticalAlignment="Bottom"
+                     HorizontalAlignment="Center"
+                     Margin="24" />
+        </Grid>
+
         <!-- Chrome overlay: title bar + toolbar docked to the top. In presentation
              mode it slides up out of view and slides back in when the cursor
              nears the top edge. -->
@@ -196,8 +245,74 @@
                     <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <!-- Left: file commands + annotation tools -->
+                <!-- Left: tab switcher, then whichever tab's commands apply -->
                 <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="4">
+
+                    <!-- Tab switcher. Deliberately inside the existing toolbar
+                         row rather than a row of its own: the chrome height
+                         drives both the document inset and the distance the
+                         chrome slides away by while presenting, so leaving it
+                         untouched keeps presentation mode exactly as it was. -->
+                    <ToggleButton x:Name="ViewerTabButton" Click="ViewerTabButton_Click" Padding="9,6"
+                                  IsChecked="True"
+                                  ToolTipService.ToolTip="Read, annotate and present">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE890;" FontSize="14" />
+                            <TextBlock Text="Viewer" FontSize="12" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="PagesTabButton" Click="PagesTabButton_Click" Padding="9,6"
+                                  IsEnabled="False"
+                                  ToolTipService.ToolTip="Delete, reorder and merge pages">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <FontIcon Glyph="&#xE8A9;" FontSize="14" />
+                            <TextBlock Text="Pages" FontSize="12" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ToggleButton>
+
+                    <AppBarSeparator />
+
+                    <!-- Page-editor commands (shown on the Pages tab) -->
+                    <StackPanel x:Name="EditorTools" Orientation="Horizontal" Spacing="4"
+                                Visibility="Collapsed">
+                        <Button x:Name="InsertPagesButton" Click="InsertPagesButton_Click" Padding="9"
+                                ToolTipService.ToolTip="Insert pages from another PDF">
+                            <FontIcon Glyph="&#xE710;" FontSize="16" />
+                        </Button>
+                        <Button x:Name="DeletePagesButton" Click="DeletePagesButton_Click" Padding="9"
+                                IsEnabled="False"
+                                ToolTipService.ToolTip="Delete the selected pages (Del)">
+                            <FontIcon Glyph="&#xE74D;" FontSize="16" />
+                        </Button>
+
+                        <AppBarSeparator />
+
+                        <Button x:Name="MovePageLeftButton" Click="MovePageLeftButton_Click" Padding="9"
+                                IsEnabled="False"
+                                ToolTipService.ToolTip="Move the selected pages earlier">
+                            <FontIcon Glyph="&#xE76B;" FontSize="16" />
+                        </Button>
+                        <Button x:Name="MovePageRightButton" Click="MovePageRightButton_Click" Padding="9"
+                                IsEnabled="False"
+                                ToolTipService.ToolTip="Move the selected pages later">
+                            <FontIcon Glyph="&#xE76C;" FontSize="16" />
+                        </Button>
+
+                        <AppBarSeparator />
+
+                        <Button x:Name="EditorUndoButton" Click="EditorUndoButton_Click" Padding="9"
+                                IsEnabled="False"
+                                ToolTipService.ToolTip="Undo the last page change (Ctrl+Z)">
+                            <FontIcon Glyph="&#xE7A7;" FontSize="16" />
+                        </Button>
+                        <Button x:Name="EditorSaveButton" Click="EditorSaveButton_Click" Padding="9"
+                                ToolTipService.ToolTip="Save the edited PDF as a new file (Ctrl+S)">
+                            <FontIcon Glyph="&#xE792;" FontSize="16" />
+                        </Button>
+                    </StackPanel>
+
+                    <!-- Viewer commands: file, annotation tools, undo -->
+                    <StackPanel x:Name="ViewerTools" Orientation="Horizontal" Spacing="4">
                     <Button x:Name="OpenButton" Click="OpenButton_Click" Padding="9"
                             ToolTipService.ToolTip="Open a PDF (Ctrl+O)">
                         <FontIcon Glyph="&#xE8E5;" FontSize="16" />
@@ -313,10 +428,16 @@
                             ToolTipService.ToolTip="Undo (Ctrl+Z)">
                         <FontIcon Glyph="&#xE7A7;" FontSize="16" />
                     </Button>
+                    </StackPanel>
                 </StackPanel>
 
-                <!-- Center: page navigation -->
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4"
+                <!-- Center: page navigation (viewer) / selection status (pages) -->
+                <TextBlock x:Name="EditorStatusText" Grid.Column="1"
+                           Visibility="Collapsed"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+
+                <StackPanel x:Name="ViewerNav" Grid.Column="1" Orientation="Horizontal" Spacing="4"
                             HorizontalAlignment="Center" VerticalAlignment="Center">
                     <Button x:Name="PrevPageButton" Click="PrevPageButton_Click" IsEnabled="False"
                             Padding="8" ToolTipService.ToolTip="Previous page">
@@ -335,7 +456,8 @@
                 </StackPanel>
 
                 <!-- Right: zoom + present -->
-                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                <StackPanel x:Name="ViewerViewTools" Grid.Column="2" Orientation="Horizontal" Spacing="4"
+                            VerticalAlignment="Center">
                     <Button x:Name="ZoomOutButton" Click="ZoomOutButton_Click" IsEnabled="False"
                             Padding="8" ToolTipService.ToolTip="Zoom out (Ctrl+-)">
                         <FontIcon Glyph="&#xE71F;" FontSize="14" />
